@@ -172,7 +172,8 @@ public:
     info.tgsize_is_multiple_of_sgwidth = tgsize_is_multiple_of_sgwidth;
     info.immutable_buffers = (1 << 29) | (1 << 30);
 
-    state_ = device_->GetMTLDevice().newComputePipelineState(info, err);
+    auto device = device_->GetMTLDevice();
+    state_ = CreatePipelineRetryingInterrupted([&] { return device.newComputePipelineState(info, err); }, err);
 
     if (!state_) {
       ERR("Failed to create compute PSO: ", err.description().getUTF8String());

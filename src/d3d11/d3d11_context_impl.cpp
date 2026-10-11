@@ -1784,6 +1784,8 @@ public:
     if (!PreDispatch())
       return;
     EmitOP([ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ](ArgumentEncodingContext &enc) {
+      if (enc.currentComputeEncoder()->pipeline_failed)
+        return;
       enc.resolveComputePassBarrier();
       auto &cmd = enc.encodeComputeCommand<wmtcmd_compute_dispatch>();
       cmd.type = WMTComputeCommandDispatch;
@@ -1800,6 +1802,8 @@ public:
       return;
     if (auto bindable = GetResourceCommon(pBufferForArgs)) {
       EmitOP([AlignedByteOffsetForArgs, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
+        if (enc.currentComputeEncoder()->pipeline_failed)
+          return;
         auto [buffer, buffer_offset] = enc.access(ArgBuffer, AlignedByteOffsetForArgs, 12, ResourceAccess::Read);
         enc.resolveComputePassBarrier();
         auto &cmd = enc.encodeComputeCommand<wmtcmd_compute_dispatch_indirect>();
@@ -4964,8 +4968,13 @@ public:
                ArgumentEncodingContext &enc) {
       MTL_COMPILED_COMPUTE_PIPELINE ComputePipeline;
       pso->GetPipeline(&ComputePipeline); // may block
-      if (!ComputePipeline.PipelineState)
+      enc.currentComputeEncoder()->pipeline_failed = ComputePipeline.PipelineState == nullptr;
+      if (!ComputePipeline.PipelineState) {
+        static std::atomic_bool warned = false;
+        if (!warned.exchange(true))
+          WARN("Skipping dispatches whose compute pipeline failed to compile (see the error above)");
         return;
+      }
       auto &cmd = enc.encodeComputeCommand<wmtcmd_compute_setpso>();
       cmd.type = WMTComputeCommandSetPSO;
       cmd.pso = ComputePipeline.PipelineState;

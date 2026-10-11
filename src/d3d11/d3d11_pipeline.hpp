@@ -18,18 +18,24 @@ pixel shader reading a varying the geometry shader does not write; Crysis 3). Ev
 pipeline compiling at that moment then fails with XPC_ERROR_CONNECTION_INTERRUPTED,
 valid ones included; those compile once the service has restarted.
 */
-template <typename Info>
-WMT::Reference<WMT::RenderPipelineState>
-NewRenderPipelineStateRetryingInterrupted(WMT::Device device, const Info &info, WMT::Reference<WMT::Error> &err) {
+template <typename Create>
+auto
+CreatePipelineRetryingInterrupted(Create &&create, WMT::Reference<WMT::Error> &err) {
   constexpr unsigned kMaxRetries = 2;
-  auto pso = device.newRenderPipelineState(info, err);
+  auto pso = create();
   for (unsigned retry = 1; !pso && err && retry <= kMaxRetries; retry++) {
     if (err.description().getUTF8String().find("XPC_ERROR_CONNECTION_INTERRUPTED") == std::string::npos)
       break;
     WARN("Metal compiler service connection interrupted, retrying pipeline creation (", retry, "/", kMaxRetries, ")");
-    pso = device.newRenderPipelineState(info, err);
+    pso = create();
   }
   return pso;
+}
+
+template <typename Info>
+WMT::Reference<WMT::RenderPipelineState>
+NewRenderPipelineStateRetryingInterrupted(WMT::Device device, const Info &info, WMT::Reference<WMT::Error> &err) {
+  return CreatePipelineRetryingInterrupted([&] { return device.newRenderPipelineState(info, err); }, err);
 }
 
 } // namespace dxmt
