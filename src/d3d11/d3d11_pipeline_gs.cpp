@@ -47,7 +47,7 @@ public:
             pDesc->InputLayout, pDesc->GeometryShader,
             pDesc->IndexBufferFormat, pDesc->GSStripTopology});
     GeometryShader = pDesc->GeometryShader->get_shader(
-      ShaderVariantGeometry{pDesc->VertexShader, pDesc->GSStripTopology});
+      ShaderVariantGeometry{pDesc->VertexShader, pDesc->PixelShader, pDesc->GSStripTopology});
    
     if (pDesc->PixelShader) {
       PixelShader = pDesc->PixelShader->get_shader(ShaderVariantPixel{

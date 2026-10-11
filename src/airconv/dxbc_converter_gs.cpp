@@ -131,7 +131,37 @@ convert_dxbc_geometry_shader(
       p(sig_ctx);
     }
   }
-  auto& gs_output_handlers = pShaderInternal->mesh_output_handlers;
+  auto gs_output_handlers = pShaderInternal->mesh_output_handlers; // copy: extended per pipeline below
+
+  SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA *ps_input_data = nullptr;
+  if (args_get_data<SM50_SHADER_PSO_PIXEL_SHADER_INPUT, SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA>(
+          pArgs, &ps_input_data
+      ) &&
+      ps_input_data->pixel_shader) {
+    // Output every user varying the pixel shader reads. D3D11 links by register and
+    // leaves a register the GS does not write undefined; Metal requires each fragment
+    // input among the mesh outputs (the G14X compiler crashes otherwise).
+    auto pixel_stage = (SM50ShaderInternal *)ps_input_data->pixel_shader;
+    uint32_t next_index = pShaderInternal->num_mesh_vertex_data;
+    for (auto &input : pixel_stage->ps_user_inputs) {
+      if (func_signature.HasMeshVertexData(input.name))
+        continue;
+      auto const index = next_index++;
+      auto const type = to_msl_type(input.type);
+      func_signature.DefineMeshVertexOutput(air::OutputMeshData{.user = input.name, .type = type, .index = index});
+      bool written = input.reg < max_output_register && input.reg < pShaderInternal->gs_output_reg_masks.size() &&
+                     (pShaderInternal->gs_output_reg_masks[input.reg] & input.mask);
+      if (written) {
+        gs_output_handlers.push_back([=, reg = input.reg, mask = input.mask](MeshOutputContext &output) -> IREffect {
+          return pop_mesh_output_vertex_data(reg, mask, index, output.vertex_id, type);
+        });
+      } else {
+        gs_output_handlers.push_back([=](MeshOutputContext &output) -> IREffect {
+          return pop_mesh_output_vertex_data_zero(index, output.vertex_id, type);
+        });
+      }
+    }
+  }
 
   setup_binding_table(shader_info, resource_map, func_signature, module);
 

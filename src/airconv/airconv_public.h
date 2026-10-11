@@ -192,6 +192,7 @@ enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE {
   SM50_SHADER_GS_PASS_THROUGH = 5,
   SM50_SHADER_PSO_GEOMETRY_SHADER = 6,
   SM50_SHADER_PSO_TESSELLATOR = 7,
+  SM50_SHADER_PSO_PIXEL_SHADER_INPUT = 8,
   SM50_SHADER_ARGUMENT_TYPE_MAX = 0xffffffff,
 };
 
@@ -282,6 +283,19 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA {
   void *next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
   bool strip_topology;
+};
+
+/**
+The pixel shader of the pipeline, for a geometry shader compiled as a mesh function:
+the mesh function then also outputs every user varying the pixel shader reads, the
+value of the GS output register if the GS declares it, otherwise zero. D3D11 leaves
+such inputs undefined; Metal's compiler crashes on M1/M2 (G14X) if a fragment input is
+missing from the mesh outputs. Converters that do not know this type ignore it.
+*/
+struct SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA {
+  void *next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  sm50_shader_t pixel_shader;
 };
 
 struct SM50_SHADER_PSO_TESSELLATOR_DATA {

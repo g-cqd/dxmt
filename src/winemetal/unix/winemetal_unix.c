@@ -1831,6 +1831,12 @@ struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
   bool strip_topology;
 };
 
+struct SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint64_t pixel_shader; /* sm50_shader_t, 64-bit on both sides, offset 8 */
+};
+
 struct SM50_SHADER_PSO_TESSELLATOR_DATA32 {
   uint32_t next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
@@ -1931,6 +1937,17 @@ sm50_compilation_argument32_convert(
       last_arg->next = NULL;
       data->type = src->type;
       data->max_potential_tess_factor = src->max_potential_tess_factor;
+      break;
+    }
+    case SM50_SHADER_PSO_PIXEL_SHADER_INPUT: {
+      struct SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA32 *src = (void *)args32;
+      struct SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA *data =
+          malloc(sizeof(struct SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->pixel_shader = (sm50_shader_t)src->pixel_shader;
       break;
     }
     case SM50_SHADER_ARGUMENT_TYPE_MAX:

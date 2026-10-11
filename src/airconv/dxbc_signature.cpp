@@ -420,6 +420,9 @@ void handle_signature_ps(
     });
     max_input_register = std::max(reg + 1, max_input_register);
     if (sig.mask() == 0) break;
+    sm50_shader->ps_user_inputs.push_back(
+      {.reg = reg, .mask = sig.mask(), .name = sig.consistentAttributeName(), .type = sig.componentType()}
+    );
     signature_handlers.push_back([=, type = sig.componentType(), name = sig.consistentAttributeName()]
     (SignatureContext &ctx) {
       bool pull_mode = bool(ctx.pull_mode_reg_mask & (1 << reg)) && interpolation != air::Interpolation::flat;
@@ -1143,6 +1146,8 @@ handle_signature_gs(
         return (sig.reg() == reg) && ((sig.mask() & mask) != 0);
       });
       max_output_register = std::max(reg + 1, max_output_register);
+      if (reg < sm50_shader->gs_output_reg_masks.size())
+        sm50_shader->gs_output_reg_masks[reg] |= mask;
       if (sig.mask() == 0) break;
       auto const mesh_vertex_data_index = num_mesh_vertex_data++;
       auto const type = to_msl_type(sig.componentType());

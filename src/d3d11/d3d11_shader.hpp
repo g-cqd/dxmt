@@ -157,9 +157,12 @@ struct ShaderVariantGeometryVertex {
 struct ShaderVariantGeometry {
   using this_type = ShaderVariantGeometry;
   ManagedShader vertex_shader_handle;
+  /* nullptr when rasterization is disabled */
+  ManagedShader pixel_shader_handle;
   bool strip_topology;
   bool operator==(const this_type &rhs) const {
     return vertex_shader_handle == rhs.vertex_shader_handle &&
+           pixel_shader_handle == rhs.pixel_shader_handle &&
            strip_topology == rhs.strip_topology;
   }
 };

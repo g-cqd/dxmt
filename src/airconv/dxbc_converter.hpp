@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -292,6 +293,8 @@ IREffect pop_mesh_output_viewport_array_index(uint32_t from_reg, uint32_t mask, 
 IREffect pop_mesh_output_position(uint32_t from_reg, uint32_t mask, pvalue vertex_id);
 IREffect
 pop_mesh_output_vertex_data(uint32_t from_reg, uint32_t mask, uint32_t idx, pvalue vertex_id, air::MSLScalerOrVectorType desired_type);
+IREffect
+pop_mesh_output_vertex_data_zero(uint32_t idx, pvalue vertex_id, air::MSLScalerOrVectorType desired_type);
 
 llvm::Expected<llvm::BasicBlock *> convert_basicblocks(
   BasicBlock *entry, context &ctx, llvm::BasicBlock *return_bb
@@ -406,6 +409,13 @@ private:
   RegisterComponentType component_type_;
 };
 
+struct PixelShaderUserInput {
+  uint32_t reg;
+  uint32_t mask; /* components of the signature element */
+  std::string name;
+  RegisterComponentType type;
+};
+
 class SM50ShaderInternal {
 public:
   dxmt::dxbc::ShaderInfo shader_info;
@@ -435,6 +445,10 @@ public:
   microsoft::D3D10_SB_PRIMITIVE gs_input_primitive = {};
   std::vector<std::function<IREffect(MeshOutputContext &)>> mesh_output_handlers;
   uint32_t num_mesh_vertex_data = 0;
+  /* pixel shader: the user (non system value) inputs it declares */
+  std::vector<PixelShaderUserInput> ps_user_inputs;
+  /* geometry shader: components declared by dcl_output, per output register */
+  std::array<uint8_t, 32> gs_output_reg_masks = {};
   microsoft::D3D10_SB_PRIMITIVE_TOPOLOGY gs_output_topology = {};
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;

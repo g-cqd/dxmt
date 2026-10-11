@@ -416,12 +416,19 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   h.update(getGlobalShaderFlag());
   h.update(variant.vertex_shader_handle->sha1());
   h.update(variant.strip_topology);
+  if (variant.pixel_shader_handle)
+    h.update(variant.pixel_shader_handle->sha1());
   auto variant_digest = h.final();
   std::string func_name = "gs_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
   auto proc = [=](const char *func_name, SM50_SHADER_COMMON_DATA *common) -> sm50_bitcode_t  {
+    SM50_SHADER_PSO_PIXEL_SHADER_INPUT_DATA pixel_input;
+    pixel_input.type = SM50_SHADER_PSO_PIXEL_SHADER_INPUT;
+    pixel_input.next = common;
+    pixel_input.pixel_shader = variant.pixel_shader_handle ? variant.pixel_shader_handle->handle() : sm50_shader_t{};
+
     SM50_SHADER_PSO_GEOMETRY_SHADER_DATA geometry;
     geometry.type = SM50_SHADER_PSO_GEOMETRY_SHADER;
-    geometry.next = common;
+    geometry.next = variant.pixel_shader_handle ? (void *)&pixel_input : (void *)common;
     geometry.strip_topology = variant.strip_topology;
 
     sm50_bitcode_t compile_result = nullptr;

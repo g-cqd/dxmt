@@ -372,6 +372,15 @@ pop_mesh_output_vertex_data(
   co_return {};
 }
 
+IREffect
+pop_mesh_output_vertex_data_zero(uint32_t idx, pvalue vertex_id, air::MSLScalerOrVectorType desired_type) {
+  auto ctx = co_yield get_context();
+  ctx.air.CreateSetMeshVertexData(
+      vertex_id, idx, llvm::Constant::getNullValue(air::get_llvm_type(desired_type, ctx.llvm))
+  );
+  co_return {};
+}
+
 IREffect pull_vertex_input(
   air::FunctionSignatureBuilder &func_signature, uint32_t to_reg, uint32_t mask,
   SM50_IA_INPUT_ELEMENT element_info, uint32_t slot_mask

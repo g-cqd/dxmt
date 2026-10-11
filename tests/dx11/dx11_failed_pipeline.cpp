@@ -25,7 +25,10 @@
 //
 // Mode "control" runs both paths with a pixel shader that links (B renders green).
 //
-// usage: dx11_failed_pipeline [vs|gs|all|control] [idle_ms (default 15000)]
+// Mode "ts" (also part of "all") draws one tessellated patch at factor 64 (smoke test of
+// the tessellation path).
+//
+// usage: dx11_failed_pipeline [vs|gs|ts|all|control] [idle_ms (default 15000)]
 // Exit 0: pass. 1: the failed draw was executed with a stale pipeline, A did not
 // draw, or the queue stopped executing work. 2: setup error (device, shader
 // compilation). 3: the process faulted. A hang (killed by the runner's timeout)
@@ -80,6 +83,31 @@ float4 ps_red(VSOut i) : SV_Target { return float4(1, 0, 0, 1); }
 // Reads TEXCOORD1, which neither vs_tri nor gs_quad writes.
 struct PSInBad { float4 pos : SV_Position; float4 c0 : TEXCOORD0; float4 c1 : TEXCOORD1; };
 float4 ps_unlinked(PSInBad i) : SV_Target { return float4(0, i.c0.y, 0, 1) + i.c1 * 0.5; }
+
+// Tessellation smoke test: a fullscreen triangle patch tessellated at factor 64
+// (DXMT clamps it to 8 on M1/M2), each control point colored by TEXCOORD0.
+struct HSIn { float4 pos : SV_Position; float4 c0 : TEXCOORD0; };
+VSOut vs_patch(uint id : SV_VertexID) { return vs_tri(id); }
+struct PatchConst { float edge[3] : SV_TessFactor; float inside : SV_InsideTessFactor; };
+PatchConst hs_const(InputPatch<VSOut, 3> p) {
+  PatchConst c;
+  c.edge[0] = 64; c.edge[1] = 64; c.edge[2] = 64; c.inside = 64;
+  return c;
+}
+[domain("tri")]
+[partitioning("integer")]
+[outputtopology("triangle_cw")]
+[outputcontrolpoints(3)]
+[patchconstantfunc("hs_const")]
+[maxtessfactor(64.0)]
+VSOut hs_main(InputPatch<VSOut, 3> p, uint i : SV_OutputControlPointID) { return p[i]; }
+[domain("tri")]
+VSOut ds_main(PatchConst c, float3 uvw : SV_DomainLocation, const OutputPatch<VSOut, 3> p) {
+  VSOut o;
+  o.pos = p[0].pos * uvw.x + p[1].pos * uvw.y + p[2].pos * uvw.z;
+  o.c0 = p[0].c0;
+  return o;
+}
 
 // Control: reads only what the previous stage writes.
 float4 ps_green(VSOut i) : SV_Target { return float4(0, i.c0.y, 0, 1); }
@@ -225,8 +253,13 @@ static int run_mode(ID3D11Device *dev, ID3D11DeviceContext *ctx, bool use_gs, bo
     result = 1;
   } else if (right.r == 0 && right.g == 0 && right.b == 0) {
     std::printf("[%s] ok: the draw with the failed pipeline was skipped\n", mode);
+  } else if (right.r == 0 && right.g == 255 && right.b == 0) {
+    // TEXCOORD0.y = 1 from the previous stage; TEXCOORD1, which it does not write,
+    // read as zero (DXMT fills varyings the geometry shader does not write with zero).
+    std::printf("[%s] ok: the unlinkable draw rendered with its own pipeline (green)\n", mode);
   } else {
-    std::printf("[%s] ok: the unlinkable draw rendered with its own pipeline (it compiled on this GPU)\n", mode);
+    std::printf("[%s] FAIL: the unlinkable draw rendered an unexpected color\n", mode);
+    result = 1;
   }
 
   staging->Release();
@@ -236,6 +269,82 @@ static int run_mode(ID3D11Device *dev, ID3D11DeviceContext *ctx, bool use_gs, bo
   ps_a->Release();
   if (gs)
     gs->Release();
+  vs->Release();
+  return result;
+}
+
+// Draws one tessellated patch (green, from TEXCOORD0) over the whole target.
+static int run_tessellation(ID3D11Device *dev, ID3D11DeviceContext *ctx) {
+  const UINT W = 32, H = 32;
+  ID3DBlob *vs_blob = compile("vs_patch", "vs_5_0");
+  ID3DBlob *hs_blob = compile("hs_main", "hs_5_0");
+  ID3DBlob *ds_blob = compile("ds_main", "ds_5_0");
+  ID3DBlob *ps_blob = compile("ps_green", "ps_5_0");
+  if (!vs_blob || !hs_blob || !ds_blob || !ps_blob)
+    return 2;
+  ID3D11VertexShader *vs = nullptr;
+  ID3D11HullShader *hs = nullptr;
+  ID3D11DomainShader *ds = nullptr;
+  ID3D11PixelShader *ps = nullptr;
+  if (FAILED(dev->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, &vs)) ||
+      FAILED(dev->CreateHullShader(hs_blob->GetBufferPointer(), hs_blob->GetBufferSize(), nullptr, &hs)) ||
+      FAILED(dev->CreateDomainShader(ds_blob->GetBufferPointer(), ds_blob->GetBufferSize(), nullptr, &ds)) ||
+      FAILED(dev->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, &ps)))
+    return 2;
+  D3D11_TEXTURE2D_DESC td = {};
+  td.Width = W;
+  td.Height = H;
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_DEFAULT;
+  td.BindFlags = D3D11_BIND_RENDER_TARGET;
+  ID3D11Texture2D *rt = nullptr, *staging = nullptr;
+  ID3D11RenderTargetView *rtv = nullptr;
+  if (FAILED(dev->CreateTexture2D(&td, nullptr, &rt)) || FAILED(dev->CreateRenderTargetView(rt, nullptr, &rtv)))
+    return 2;
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  if (FAILED(dev->CreateTexture2D(&td, nullptr, &staging)))
+    return 2;
+  const float black[4] = {0, 0, 0, 1};
+  ctx->ClearRenderTargetView(rtv, black);
+  ctx->OMSetRenderTargets(1, &rtv, nullptr);
+  ctx->IASetInputLayout(nullptr);
+  ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+  D3D11_VIEWPORT vp = {0, 0, (float)W, (float)H, 0, 1};
+  ctx->RSSetViewports(1, &vp);
+  ctx->VSSetShader(vs, nullptr, 0);
+  ctx->HSSetShader(hs, nullptr, 0);
+  ctx->DSSetShader(ds, nullptr, 0);
+  ctx->GSSetShader(nullptr, nullptr, 0);
+  ctx->PSSetShader(ps, nullptr, 0);
+  std::printf("[ts] draw one patch tessellated at factor 64, read back\n");
+  ctx->Draw(3, 0);
+  ctx->HSSetShader(nullptr, nullptr, 0);
+  ctx->DSSetShader(nullptr, nullptr, 0);
+  ctx->CopyResource(staging, rt);
+  D3D11_MAPPED_SUBRESOURCE map;
+  if (FAILED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &map)))
+    return 1;
+  unsigned green = 0;
+  for (UINT y = 0; y < H; y++)
+    for (UINT x = 0; x < W; x++) {
+      Rgba p = *(Rgba *)((char *)map.pData + y * map.RowPitch + x * 4);
+      green += p.r == 0 && p.g == 255 && p.b == 0;
+    }
+  ctx->Unmap(staging, 0);
+  std::printf("[ts] %u of %u pixels green\n", green, W * H);
+  int result = green == W * H ? 0 : 1;
+  std::printf(result ? "[ts] FAIL: the tessellated patch did not cover the target\n" : "[ts] ok: tessellated patch rendered\n");
+  staging->Release();
+  rtv->Release();
+  rt->Release();
+  ps->Release();
+  ds->Release();
+  hs->Release();
   vs->Release();
   return result;
 }
@@ -264,6 +373,11 @@ int main(int argc, char **argv) {
   }
   if (!std::strcmp(which, "gs") || !std::strcmp(which, "all") || control) {
     int r = run_mode(dev, ctx, true, control);
+    if (r > result)
+      result = r;
+  }
+  if (!std::strcmp(which, "ts") || !std::strcmp(which, "all")) {
+    int r = run_tessellation(dev, ctx);
     if (r > result)
       result = r;
   }

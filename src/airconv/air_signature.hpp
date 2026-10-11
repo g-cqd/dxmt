@@ -616,6 +616,12 @@ public:
   uint32_t DefineOutput(const FunctionOutput &output);
   uint32_t DefineMeshVertexOutput(const MeshVertexOutput &output);
   uint32_t DefineMeshPrimitiveOutput(const MeshPrimitiveOutput &output);
+  bool HasMeshVertexData(const std::string &user) const {
+    for (auto &output : mesh_vertex_outputs)
+      if (auto data = std::get_if<OutputMeshData>(&output); data && data->user == user)
+        return true;
+    return false;
+  }
   void UseEarlyFragmentTests() { early_fragment_tests = true; }
   void UseMaxWorkgroupSize(uint32_t size) { max_work_group_size = size; }
   void UseMaxMeshWorkgroupSize(uint32_t size) { max_mesh_work_group_size = size; }
