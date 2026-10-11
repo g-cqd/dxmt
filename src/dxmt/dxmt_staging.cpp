@@ -1,5 +1,8 @@
 #include "dxmt_staging.hpp"
+#include "log/log.hpp"
+#include "util_likely.hpp"
 #include <cassert>
+#include <utility>
 
 namespace dxmt {
 
@@ -11,8 +14,18 @@ StagingResource::StagingResource(
     length(length),
     device_(device) {
   buffer_ = new Buffer(length, device);
-  immediate_name_ = allocate(0);
+  Flags<BufferAllocationFlag> flags;
+#ifdef __i386__
+  flags.set(BufferAllocationFlag::CpuPlaced);
+#endif
+  // mappedImmediateMemory() is nullptr if this has no CPU-accessible memory
+  buffer_pool.push_back(buffer_->allocate(flags));
+  immediate_name_ = 0;
   buffer_->rename(allocation(0));
+}
+
+StagingResource::~StagingResource() {
+  RenameBudget::instance().release(renamed_bytes_);
 }
 
 void
@@ -62,28 +75,38 @@ StagingResource::unmap() {
 uint64_t
 StagingResource::allocate(uint64_t coherent_seq_id) {
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  uint64_t ret = ~0ull;
-  for (;;) {
-    if (fifo.empty()) {
-      break;
-    }
-    auto entry = fifo.front();
-    if (entry.will_free_at > coherent_seq_id) {
-      break;
-    }
-    ret = entry.id;
+  if (!fifo.empty() && fifo.front().will_free_at <= coherent_seq_id) {
+    auto id = fifo.front().id;
     fifo.pop();
-    break;
+    return id;
   }
-  if (ret == ~0ull) {
-    Flags<BufferAllocationFlag> flags;
+  auto &budget = RenameBudget::instance();
+  if (!budget.allows(renamed_bytes_, length)) {
+    WARN_ONCE("StagingResource: rename budget reached (", renamed_bytes_ >> 20, " MB of copies of a ", length,
+              "-byte resource), waiting for the GPU instead");
+    return kNoAllocation;
+  }
+  Flags<BufferAllocationFlag> flags;
 #ifdef __i386__
-    flags.set(BufferAllocationFlag::CpuPlaced);
+  flags.set(BufferAllocationFlag::CpuPlaced);
 #endif
-    buffer_pool.push_back(buffer_->allocate(flags));
-    ret = buffer_pool.size() - 1;
+  auto new_allocation = buffer_->allocate(flags);
+  if (unlikely(!new_allocation->mappedMemory(0))) {
+    ERR_ONCE("StagingResource: no CPU-accessible memory for a ", length, "-byte copy, waiting for the GPU instead");
+    return kNoAllocation;
   }
-  return ret;
+  buffer_pool.push_back(std::move(new_allocation));
+  renamed_bytes_ += length;
+  budget.acquire(length);
+  return buffer_pool.size() - 1;
+}
+
+uint64_t
+StagingResource::renameWaitSeqId() {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  if (!fifo.empty())
+    return fifo.front().will_free_at;
+  return gpu_occupied_until_finished_seq_id;
 }
 
 void

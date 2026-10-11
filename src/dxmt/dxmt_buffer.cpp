@@ -1,11 +1,13 @@
 #include "dxmt_buffer.hpp"
 #include "dxmt_format.hpp"
+#include "log/log.hpp"
 #include "thread.hpp"
 #include "util_likely.hpp"
 #include "util_math.hpp"
 #include "wsi_platform.hpp"
 #include <cassert>
 #include <mutex>
+#include <utility>
 
 namespace dxmt {
 
@@ -25,6 +27,10 @@ BufferAllocation::BufferAllocation(WMT::Device device, const WMTBufferInfo &info
   fenceTrackers.resize(suballocation_count_);
   if (flags_.test(BufferAllocationFlag::CpuPlaced)) {
     placed_buffer = wsi::aligned_malloc(info_.length, DXMT_PAGE_SIZE);
+    if (unlikely(!placed_buffer)) {
+      // Metal will allocate the memory itself, at an address a 32-bit process cannot reach
+      ERR_ONCE("BufferAllocation: out of address space for a CPU-visible buffer of ", info_.length, " bytes");
+    }
     info_.memory.set(placed_buffer);
   }
   obj_ = device.newBuffer(info_);

@@ -45,11 +45,13 @@ CreateStagingBuffer(MTLD3D11Device *pDevice, const D3D11_BUFFER_DESC *pDesc,
                     ID3D11Buffer **ppBuffer) {
   auto metal = pDevice->GetMTLDevice();
   auto byte_width = pDesc->ByteWidth;
-  auto buffer = new StagingResource(metal, byte_width, byte_width, byte_width);
+  Rc<StagingResource> buffer = new StagingResource(metal, byte_width, byte_width, byte_width);
+  if (unlikely(!buffer->mappedImmediateMemory()))
+    return E_OUTOFMEMORY;
   if (pInitialData) {
     memcpy(buffer->mappedImmediateMemory(), pInitialData->pSysMem, byte_width);
   }
-  *ppBuffer = reinterpret_cast<ID3D11Buffer *>(ref(new StagingBuffer(pDesc, pDevice, buffer)));
+  *ppBuffer = reinterpret_cast<ID3D11Buffer *>(ref(new StagingBuffer(pDesc, pDevice, std::move(buffer))));
   return S_OK;
 }
 
@@ -117,7 +119,9 @@ HRESULT CreateStagingTextureInternal(MTLD3D11Device *pDevice,
       return E_FAIL;
     }
     D3D11_ASSERT(subresources.size() == sub.SubresourceId);
-    auto buffer = new StagingResource(metal, buf_len, bpr, bpi);
+    Rc<StagingResource> buffer = new StagingResource(metal, buf_len, bpr, bpi);
+    if (unlikely(!buffer->mappedImmediateMemory()))
+      return E_OUTOFMEMORY;
     if (pInitialData) {
       auto mapped = buffer->mappedImmediateMemory();
       auto bpi_read = is_3d_tex ? pInitialData[sub.SubresourceId].SysMemSlicePitch : 0;

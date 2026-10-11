@@ -7,6 +7,10 @@ DynamicBuffer::DynamicBuffer(Buffer *buffer, Flags<BufferAllocationFlag> flags) 
     flags_(flags),
     name_(buffer->current()) {}
 
+DynamicBuffer::~DynamicBuffer() {
+  RenameBudget::instance().release(renamed_bytes_);
+}
+
 void
 DynamicBuffer::incRef() {
   refcount_.fetch_add(1u, std::memory_order_acquire);
@@ -34,9 +38,32 @@ DynamicBuffer::allocate(uint64_t coherent_seq_id) {
     fifo.pop();
     break;
   }
-  if (!ret.ptr())
+  if (!ret.ptr()) {
     ret = buffer->allocate(flags_);
+    // one without CPU memory is dropped by the caller and does not count
+    if (ret->mappedMemory(0)) {
+      renamed_bytes_ += ret->allocatedLength();
+      RenameBudget::instance().acquire(ret->allocatedLength());
+    }
+  }
   return ret;
+}
+
+bool
+DynamicBuffer::mustWaitToAllocate(uint64_t coherent_seq_id, uint64_t *wait_seq_id) {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  if (fifo.empty() || fifo.front().will_free_at <= coherent_seq_id)
+    return false;
+  if (RenameBudget::instance().allows(renamed_bytes_, name_->allocatedLength()))
+    return false;
+  *wait_seq_id = fifo.front().will_free_at;
+  return true;
+}
+
+uint64_t
+DynamicBuffer::oldestRetiredSeqId() {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  return fifo.empty() ? 0 : fifo.front().will_free_at;
 }
 
 void
@@ -75,6 +102,10 @@ DynamicLinearTexture::DynamicLinearTexture(Texture *texture, Flags<TextureAlloca
     flags_(flags),
     name_(texture->current()) {}
 
+DynamicLinearTexture::~DynamicLinearTexture() {
+  RenameBudget::instance().release(renamed_bytes_);
+}
+
 void
 DynamicLinearTexture::incRef() {
   refcount_.fetch_add(1u, std::memory_order_acquire);
@@ -102,9 +133,32 @@ DynamicLinearTexture::allocate(uint64_t coherent_seq_id) {
     fifo.pop();
     break;
   }
-  if (!ret.ptr())
+  if (!ret.ptr()) {
     ret = texture->allocate(flags_);
+    // one without CPU memory is dropped by the caller and does not count
+    if (ret->mappedMemory) {
+      renamed_bytes_ += texture->bytesPerImage();
+      RenameBudget::instance().acquire(texture->bytesPerImage());
+    }
+  }
   return ret;
+}
+
+bool
+DynamicLinearTexture::mustWaitToAllocate(uint64_t coherent_seq_id, uint64_t *wait_seq_id) {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  if (fifo.empty() || fifo.front().will_free_at <= coherent_seq_id)
+    return false;
+  if (RenameBudget::instance().allows(renamed_bytes_, texture->bytesPerImage()))
+    return false;
+  *wait_seq_id = fifo.front().will_free_at;
+  return true;
+}
+
+uint64_t
+DynamicLinearTexture::oldestRetiredSeqId() {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  return fifo.empty() ? 0 : fifo.front().will_free_at;
 }
 
 void

@@ -59,9 +59,23 @@ public:
     return flags_;
   }
 
+  /**
+   * nullptr when the CPU cannot access the allocation: GPU-private storage, or a
+   * 32-bit process that ran out of address space for a CpuPlaced allocation.
+   */
   void *
   mappedMemory(uint32_t sub) const noexcept {
+    if (unlikely(!mappedMemory_))
+      return nullptr;
     return reinterpret_cast<void *>(reinterpret_cast<std::uintptr_t>(mappedMemory_) + sub * suballocation_size_);
+  }
+
+  /**
+   * bytes of memory this allocation occupies (at least one page when suballocated)
+   */
+  uint64_t
+  allocatedLength() const noexcept {
+    return info_.length;
   }
 
   uint64_t

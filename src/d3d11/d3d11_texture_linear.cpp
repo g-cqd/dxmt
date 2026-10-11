@@ -59,7 +59,9 @@ TDynamicLinearTexture(
     auto _ = this->texture_->rename(Rc(allocation));
     D3D11_ASSERT(_.ptr() == nullptr);
 
-    if (pInitialData) {
+    if (pInitialData && unlikely(!allocation->mappedMemory)) {
+      ERR("DynamicLinearTexture: no CPU-accessible memory, initial data dropped");
+    } else if (pInitialData) {
       if (pInitialData->SysMemPitch != bytes_per_row_) {
         for (unsigned row = 0; row < this->texture_->height(); row++) {
           memcpy(

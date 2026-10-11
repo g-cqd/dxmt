@@ -25,8 +25,21 @@ public:
   StagingMapResult tryMap(uint64_t coherent_seq_id, bool read, bool write);
   void unmap();
 
+  static constexpr uint64_t kNoAllocation = ~0ull;
+
+  /**
+   * A copy to rename to: a retired one the GPU has finished with, or a new one.
+   * kNoAllocation when there is neither, because the rename budget is spent or the
+   * new copy could not get CPU-accessible memory; then wait for renameWaitSeqId().
+   */
   uint64_t allocate(uint64_t coherent_seq_id);
   void updateImmediateName(uint64_t current_seq_id, uint64_t allocation);
+
+  /**
+   * The sequence id to wait for when allocate() fails: when the oldest retired copy
+   * becomes free, or, with no retired copy, when the current one can be written in place.
+   */
+  uint64_t renameWaitSeqId();
 
   void *
   mappedImmediateMemory() {
@@ -62,6 +75,7 @@ public:
   uint64_t length;
 
   StagingResource(WMT::Device device, uint64_t length, uint32_t bytes_per_row, uint32_t bytes_per_image);
+  ~StagingResource();
 
 private:
   struct QueueEntry {
@@ -75,6 +89,8 @@ private:
   std::atomic<uint32_t> refcount_ = {0u};
   std::queue<QueueEntry> fifo;
   dxmt::mutex mutex_;
+  // bytes of renamed copies in buffer_pool beyond the first allocation, held in RenameBudget
+  uint64_t renamed_bytes_ = 0;
   bool mapped = false;
   // prevent read from staging before
   uint64_t cpu_coherent_after_finished_seq_id = 0;

@@ -80,6 +80,12 @@ private:
 
 #define ERR(...) Logger::err(str::format(__VA_ARGS__))
 
+#define WARN_ONCE(...)                                                         \
+  static bool s_warningShown = false;                                          \
+  if (!std::exchange(s_warningShown, true)) {                                  \
+    Logger::warn(str::format(__VA_ARGS__));                                    \
+  }
+
 #define ERR_ONCE(...)                                                          \
   static bool s_errorShown = false;                                            \
   if (!std::exchange(s_errorShown, true)) {                                    \

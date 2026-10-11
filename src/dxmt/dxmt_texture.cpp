@@ -1,8 +1,11 @@
 #include "dxmt_texture.hpp"
 #include "dxmt_residency.hpp"
+#include "log/log.hpp"
+#include "util_likely.hpp"
 #include "wsi_platform.hpp"
 #include <atomic>
 #include <cassert>
+#include <utility>
 
 namespace dxmt {
 
@@ -175,9 +178,16 @@ Texture::allocate(Flags<TextureAllocationFlag> flags) {
     buffer_info.memory.set(nullptr);
 #ifdef __i386__
     buffer_info.memory.set(wsi::aligned_malloc(bytes_per_image_, DXMT_PAGE_SIZE));
+    if (unlikely(!buffer_info.memory.ptr)) {
+      // Metal will allocate the memory itself, at an address a 32-bit process cannot reach
+      ERR_ONCE("Texture: out of address space for a CPU-visible linear texture of ", bytes_per_image_, " bytes");
+    }
 #endif
     auto buffer = device_.newBuffer(buffer_info);
-    return new TextureAllocation(this, std::move(buffer), buffer_info.memory.get(), info, bytes_per_row_, flags);
+    // nullptr when the memory is GPU-private or out of a 32-bit process's reach
+    return new TextureAllocation(
+        this, std::move(buffer), buffer_info.memory.get_accessible_or_null(), info, bytes_per_row_, flags
+    );
   }
   auto texture = flags.test(TextureAllocationFlag::Shared) ? device_.newSharedTexture(info) : device_.newTexture(info);
   return new TextureAllocation(this, std::move(texture), info, flags);

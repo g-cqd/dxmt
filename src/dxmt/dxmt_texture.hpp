@@ -213,6 +213,14 @@ public:
     return info_.depth;
   }
 
+  /**
+   * bytes of the buffer backing a linear texture allocation, 0 for other textures
+   */
+  unsigned
+  bytesPerImage() const {
+    return bytes_per_image_;
+  }
+
   unsigned
   width(TextureViewKey view) {
     return std::max(info_.width >> view.mip_start, 1u);

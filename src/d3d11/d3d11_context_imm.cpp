@@ -115,14 +115,68 @@ public:
     return refCount;
   }
 
+  /**
+  Wait until the GPU reaches `seq_id`. The current chunk is committed first even if
+  only renames (which do not mark it dirty) were recorded since the last flush.
+   */
+  void
+  WaitForRetiredAllocation(uint64_t seq_id, uint64_t &current_seq_id, uint64_t &coherent_seq_id) {
+    promote_flush = true;
+    Flush();
+    auto &statistics = cmd_queue.CurrentFrameStatistics();
+    auto t0 = clock::now();
+    cmd_queue.WaitCPUFence(seq_id);
+    auto t1 = clock::now();
+    statistics.sync_count++;
+    statistics.sync_interval += (t1 - t0);
+    current_seq_id = cmd_queue.CurrentSeqId();
+    coherent_seq_id = cmd_queue.CoherentSeqId();
+  }
+
+  static bool
+  HasCpuMemory(const Rc<BufferAllocation> &allocation) {
+    return allocation->mappedMemory(0) != nullptr;
+  }
+
+  static bool
+  HasCpuMemory(const Rc<TextureAllocation> &allocation) {
+    return allocation->mappedMemory != nullptr;
+  }
+
+  /**
+  The allocation a WRITE_DISCARD map renames to. Waits for the GPU to retire the
+  oldest allocation instead of growing past the rename budget, or when a new one
+  gets no CPU-accessible memory. The result has no CPU memory only if nothing can
+  be reused either.
+   */
+  template <typename Dynamic>
+  auto
+  AllocateDiscardName(Rc<Dynamic> &dynamic, uint64_t &current_seq_id, uint64_t &coherent_seq_id) {
+    uint64_t wait_seq_id = 0;
+    if (dynamic->mustWaitToAllocate(coherent_seq_id, &wait_seq_id))
+      WaitForRetiredAllocation(wait_seq_id, current_seq_id, coherent_seq_id);
+    auto allocation = dynamic->allocate(coherent_seq_id);
+    if (unlikely(!HasCpuMemory(allocation)) && (wait_seq_id = dynamic->oldestRetiredSeqId())) {
+      WaitForRetiredAllocation(wait_seq_id, current_seq_id, coherent_seq_id);
+      allocation = dynamic->allocate(coherent_seq_id);
+    }
+    return allocation;
+  }
+
+  /**
+  nullptr if the buffer has no CPU-accessible memory (32-bit address space exhausted)
+   */
   void *
-  MapDynamicBuffer(Rc<DynamicBuffer> &dynamic, uint64_t current_seq_id, uint64_t coherent_seq_id) {
+  MapDynamicBuffer(Rc<DynamicBuffer> &dynamic, uint64_t &current_seq_id, uint64_t &coherent_seq_id) {
     if (auto next_sub = dynamic->nextSuballocation()) {
       EmitST([allocation = dynamic->immediateName(), next_sub](ArgumentEncodingContext &enc) mutable {
         allocation->useSuballocation(next_sub);
       });
     } else {
-      dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), 0, false);
+      auto allocation = AllocateDiscardName(dynamic, current_seq_id, coherent_seq_id);
+      if (unlikely(!HasCpuMemory(allocation)))
+        return nullptr;
+      dynamic->updateImmediateName(current_seq_id, std::move(allocation), 0, false);
       EmitST([allocation = dynamic->immediateName(),
               buffer = Rc(dynamic->buffer)](ArgumentEncodingContext &enc) mutable {
         allocation->useSuballocation(0);
@@ -167,12 +221,16 @@ public:
         }
 
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
         break;
       }
       case D3D11_MAP_WRITE_NO_OVERWRITE: {
         pMappedResource->pData = dynamic->immediateMappedMemory();
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
         break;
@@ -193,6 +251,8 @@ public:
         }
 
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
         break;
@@ -211,7 +271,10 @@ public:
           stage.SRVs.set_dirty();
         }
 
-        dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
+        auto allocation = AllocateDiscardName(dynamic, current_seq_id, coherent_seq_id);
+        if (unlikely(!HasCpuMemory(allocation)))
+          return E_OUTOFMEMORY;
+        dynamic->updateImmediateName(current_seq_id, std::move(allocation), false);
         EmitST([allocation = dynamic->immediateName(),
               texture = Rc(dynamic->texture)](ArgumentEncodingContext &enc) mutable {
           auto _ = texture->rename(forward_rc(allocation));
@@ -224,6 +287,8 @@ public:
       }
       case D3D11_MAP_WRITE_NO_OVERWRITE: {
         pMappedResource->pData = dynamic->mappedMemory();
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
         break;
@@ -238,6 +303,9 @@ public:
       if (ignore_map_flag_no_wait_)
         MapFlags &= ~D3D11_MAP_FLAG_DO_NOT_WAIT;
 
+      if (unlikely(!staging->mappedImmediateMemory()))
+        return E_OUTOFMEMORY;
+
       while (true) {
         auto result = staging->tryMap(coherent_seq_id, MapType & D3D11_MAP_READ, MapType & D3D11_MAP_WRITE);
         if (result == StagingMapResult::Mapped)
@@ -245,13 +313,24 @@ public:
         if (result == StagingMapResult::Renamable) {
           // when write to a buffer that is gpu-readonly
           auto next_name = staging->allocate(coherent_seq_id);
-          // can't guarantee a full overwrite
-          std::memcpy(staging->mappedMemory(next_name), staging->mappedImmediateMemory(), staging->length);
-          staging->updateImmediateName(current_seq_id, next_name);
-          EmitST([staging, next_name](ArgumentEncodingContext &enc) mutable { 
-            auto _ = staging->buffer()->rename(staging->allocation(next_name));
-          });
-          result = StagingMapResult::Mappable;
+          if (next_name != StagingResource::kNoAllocation) {
+            // can't guarantee a full overwrite
+            std::memcpy(staging->mappedMemory(next_name), staging->mappedImmediateMemory(), staging->length);
+            staging->updateImmediateName(current_seq_id, next_name);
+            EmitST([staging, next_name](ArgumentEncodingContext &enc) mutable {
+              auto _ = staging->buffer()->rename(staging->allocation(next_name));
+            });
+            result = StagingMapResult::Mappable;
+          } else {
+            // Rename budget spent (or no memory for a copy): wait for the GPU to
+            // retire the oldest copy, or to finish with the current one. The copy
+            // may be retired by commands in the current chunk, which renames alone
+            // do not mark dirty, so commit it even if Flush() would skip it.
+            auto wait_seq_id = std::max(staging->renameWaitSeqId(), coherent_seq_id + 1);
+            result = StagingMapResult(wait_seq_id - coherent_seq_id);
+            promote_flush = true;
+            Flush();
+          }
         }
         if (result == StagingMapResult::Mappable) {
           TRACE("staging map ready");

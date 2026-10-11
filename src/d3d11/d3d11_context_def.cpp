@@ -173,6 +173,8 @@ public:
         }
 
         pMappedResource->pData = MapDynamicBuffer(dynamic);
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
         break;
@@ -185,6 +187,8 @@ public:
         }
         auto &allocation_state = ret->second;
         pMappedResource->pData = allocation_state.allocation->mappedMemory(allocation_state.suballocation);
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
         break;
@@ -223,6 +227,8 @@ public:
         });
 
         pMappedResource->pData = new_allocation->mappedMemory;
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
         break;
@@ -234,6 +240,8 @@ public:
           return E_INVALIDARG;
         }
         pMappedResource->pData = ret->second.first->mappedMemory;
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
         break;
@@ -255,6 +263,8 @@ public:
             stage.SRVs.set_dirty();
         }
         pMappedResource->pData = MapDynamicBuffer(dynamic);
+        if (unlikely(!pMappedResource->pData))
+          return E_OUTOFMEMORY;
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
         break;
