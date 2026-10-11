@@ -180,6 +180,13 @@ struct RenderEncoderData : EncoderData {
   bool use_visibility_result = 0;
   bool use_tessellation = 0;
   bool use_geometry = 0;
+  /**
+  The pipeline of the last set-pipeline command of this encoder failed to compile, so
+  the encoder still has the previous pipeline bound. Draws are dropped until a pipeline
+  is set successfully: running them with the previous pipeline reads bindings laid out
+  for other shaders (Crysis 3 page-faulted the GPU this way).
+  */
+  bool pipeline_failed = 0;
   TileBarrierPSOKey tile_barrier_pso_key = {};
   WMT::RenderPipelineState last_pso = {};
 };

@@ -6,6 +6,22 @@
 
 namespace dxmt {
 
+static std::string
+ShaderNames(std::initializer_list<std::pair<const char *, ManagedShader>> shaders) {
+  // The first 8 hex digits of the SHA-1 of a shader are the ones in its function
+  // names (vsgs_xxxxxxxx_*, gs_xxxxxxxx_*, ps_xxxxxxxx_*) in the DXMT shader cache.
+  std::string names;
+  for (auto &[stage, shader] : shaders) {
+    if (!shader)
+      continue;
+    names += names.empty() ? "" : " ";
+    names += stage;
+    names += "=";
+    names += shader->sha1().string().substr(0, 8);
+  }
+  return names;
+}
+
 class MTLCompiledGeometryPipelineImpl
     : public MTLCompiledGeometryPipeline {
 public:
@@ -15,7 +31,10 @@ public:
         depth_stencil_format(pDesc->DepthStencilFormat), device_(pDevice),
         pBlendState(pDesc->BlendState),
         RasterizationEnabled(pDesc->RasterizationEnabled),
-        SampleCount(pDesc->SampleCount) {
+        SampleCount(pDesc->SampleCount),
+        shader_names_(ShaderNames(
+            {{"VS", pDesc->VertexShader}, {"GS", pDesc->GeometryShader}, {"PS", pDesc->PixelShader}}
+        )) {
     uint32_t unorm_output_reg_mask = 0;
     for (unsigned i = 0; i < num_rtvs; i++) {
       rtv_formats[i] = pDesc->ColorAttachmentFormats[i];
@@ -114,7 +133,7 @@ public:
     state_mesh_ = device_->GetMTLDevice().newRenderPipelineState(info, err);
 
     if (state_mesh_ == nullptr) {
-      ERR("Failed to create mesh PSO: ", err.description().getUTF8String());
+      ERR("Failed to create mesh PSO (", shader_names_, "): ", err.description().getUTF8String());
       return this;
     }
     return this;
@@ -138,6 +157,7 @@ private:
   WMT::Reference<WMT::RenderPipelineState> state_mesh_;
   bool RasterizationEnabled;
   UINT SampleCount;
+  std::string shader_names_;
 
   CompiledShader *VertexShader;
   CompiledShader *PixelShader;

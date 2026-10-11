@@ -34,6 +34,10 @@ executable('dx11_buffer_rtv', ['dx11_buffer_rtv.cpp'],
   dependencies: [ lib_d3d11 ]
 )
 
-executable(dx11_staging_rename, [dx11_staging_rename.cpp],
+executable('dx11_staging_rename', ['dx11_staging_rename.cpp'],
   dependencies: [ lib_d3d11 ]
+)
+
+executable('dx11_failed_pipeline', ['dx11_failed_pipeline.cpp'],
+  dependencies: [ lib_d3d11, lib_d3dcompiler ]
 )

@@ -8,6 +8,22 @@
 
 namespace dxmt {
 
+static std::string
+ShaderNames(std::initializer_list<std::pair<const char *, ManagedShader>> shaders) {
+  // The first 8 hex digits of the SHA-1 of a shader are the ones in its function
+  // names (vsgs_xxxxxxxx_*, gs_xxxxxxxx_*, ps_xxxxxxxx_*) in the DXMT shader cache.
+  std::string names;
+  for (auto &[stage, shader] : shaders) {
+    if (!shader)
+      continue;
+    names += names.empty() ? "" : " ";
+    names += stage;
+    names += "=";
+    names += shader->sha1().string().substr(0, 8);
+  }
+  return names;
+}
+
 static dxmt::mutex ts_global_mutex;
 
 class MTLCompiledTessellationPipelineImpl: public MTLCompiledTessellationMeshPipeline {
@@ -18,7 +34,10 @@ public:
         depth_stencil_format(pDesc->DepthStencilFormat), device_(pDevice),
         pBlendState(pDesc->BlendState),
         RasterizationEnabled(pDesc->RasterizationEnabled),
-        SampleCount(pDesc->SampleCount) {
+        SampleCount(pDesc->SampleCount),
+        shader_names_(ShaderNames(
+            {{"VS", pDesc->VertexShader}, {"HS", pDesc->HullShader}, {"DS", pDesc->DomainShader}, {"PS", pDesc->PixelShader}}
+        )) {
     uint32_t unorm_output_reg_mask = 0;
     for (unsigned i = 0; i < num_rtvs; i++) {
       rtv_formats[i] = pDesc->ColorAttachmentFormats[i];
@@ -149,7 +168,7 @@ public:
           device_->GetMTLDevice().newRenderPipelineState(info, err);
     }
     if (state_rasterization_ == nullptr) {
-      ERR("Failed to create tessellation raster PSO: ",
+      ERR("Failed to create tessellation raster PSO (", shader_names_, "): ",
           err.description().getUTF8String());
     }
 
@@ -174,6 +193,7 @@ private:
   WMT::Reference<WMT::RenderPipelineState> state_rasterization_;
   bool RasterizationEnabled;
   UINT SampleCount;
+  std::string shader_names_;
 
   MTL_SHADER_REFLECTION hull_reflection;
 
