@@ -6,6 +6,33 @@
 #include "d3d11_shader.hpp"
 #include "d3d11_state_object.hpp"
 #include "util_hash.hpp"
+#include "log/log.hpp"
+#include <string>
+
+namespace dxmt {
+
+/**
+Creates a render pipeline state and retries when the connection to the Metal compiler
+service was interrupted. On M1/M2 GPUs the service crashes on some mesh pipelines (a
+pixel shader reading a varying the geometry shader does not write; Crysis 3). Every
+pipeline compiling at that moment then fails with XPC_ERROR_CONNECTION_INTERRUPTED,
+valid ones included; those compile once the service has restarted.
+*/
+template <typename Info>
+WMT::Reference<WMT::RenderPipelineState>
+NewRenderPipelineStateRetryingInterrupted(WMT::Device device, const Info &info, WMT::Reference<WMT::Error> &err) {
+  constexpr unsigned kMaxRetries = 2;
+  auto pso = device.newRenderPipelineState(info, err);
+  for (unsigned retry = 1; !pso && err && retry <= kMaxRetries; retry++) {
+    if (err.description().getUTF8String().find("XPC_ERROR_CONNECTION_INTERRUPTED") == std::string::npos)
+      break;
+    WARN("Metal compiler service connection interrupted, retrying pipeline creation (", retry, "/", kMaxRetries, ")");
+    pso = device.newRenderPipelineState(info, err);
+  }
+  return pso;
+}
+
+} // namespace dxmt
 
 struct MTL_GRAPHICS_PIPELINE_DESC {
   ManagedShader VertexShader;

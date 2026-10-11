@@ -164,8 +164,7 @@ public:
 
     {
       std::lock_guard<dxmt::mutex> lock(ts_global_mutex);
-      state_rasterization_ =
-          device_->GetMTLDevice().newRenderPipelineState(info, err);
+      state_rasterization_ = NewRenderPipelineStateRetryingInterrupted(device_->GetMTLDevice(), info, err);
     }
     if (state_rasterization_ == nullptr) {
       ERR("Failed to create tessellation raster PSO (", shader_names_, "): ",
