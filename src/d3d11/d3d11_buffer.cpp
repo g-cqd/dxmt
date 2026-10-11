@@ -4,6 +4,8 @@
 #include "dxmt_dynamic.hpp"
 #include "dxmt_format.hpp"
 #include "d3d11_resource.hpp"
+#include <algorithm>
+#include <atomic>
 
 namespace dxmt {
 
@@ -283,6 +285,59 @@ public:
     ));
     *ppView = srv;
     return S_OK;
+  };
+
+  /**
+   * Metal cannot render into a buffer, so a buffer render-target view
+   * (D3D11_RTV_DIMENSION_BUFFER) is backed by a hidden NumElements x 1
+   * texture of the view format. Draws into the view succeed, but they never
+   * reach the buffer and the view does not see the buffer's contents.
+   * Frostbite (Battlefield 3 and 4) creates such views and treats a failure
+   * as fatal.
+   */
+  HRESULT
+  STDMETHODCALLTYPE
+  CreateRenderTargetView(const D3D11_RENDER_TARGET_VIEW_DESC1 *pDesc, ID3D11RenderTargetView1 **ppView) override {
+    if (!(desc.BindFlags & D3D11_BIND_RENDER_TARGET))
+      return E_INVALIDARG;
+    // A buffer has no format to default to, so a view on it needs a description.
+    if (!pDesc || pDesc->ViewDimension != D3D11_RTV_DIMENSION_BUFFER || pDesc->Format == DXGI_FORMAT_UNKNOWN)
+      return E_INVALIDARG;
+
+    D3D11_TEXTURE2D_DESC1 textureDesc = {};
+    textureDesc.Width = std::max(pDesc->Buffer.NumElements, 1u);
+    textureDesc.Height = 1;
+    textureDesc.MipLevels = 1;
+    textureDesc.ArraySize = 1;
+    textureDesc.Format = pDesc->Format;
+    textureDesc.SampleDesc = {1, 0};
+    textureDesc.Usage = D3D11_USAGE_DEFAULT;
+    textureDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    textureDesc.TextureLayout = D3D11_TEXTURE_LAYOUT_UNDEFINED;
+
+    static std::atomic<bool> s_warned = false;
+    if (!s_warned.exchange(true)) {
+      WARN(
+          "D3D11Buffer: render target view on a buffer (format ", pDesc->Format, ", ", textureDesc.Width,
+          " elements) is backed by a hidden texture; the buffer contents are not preserved"
+      );
+    }
+
+    Com<ID3D11Texture2D1> texture;
+    HRESULT hr = m_parent->CreateTexture2D1(&textureDesc, nullptr, &texture);
+    if (FAILED(hr)) {
+      ERR("D3D11Buffer: failed to create the texture behind a buffer render target view: ", textureDesc.Width,
+          "x1 format ", textureDesc.Format, " hr=", hr);
+      return E_INVALIDARG;
+    }
+
+    D3D11_RENDER_TARGET_VIEW_DESC1 viewDesc = {};
+    viewDesc.Format = pDesc->Format;
+    viewDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+    viewDesc.Texture2D.MipSlice = 0;
+    viewDesc.Texture2D.PlaneSlice = 0;
+    // The view keeps a private reference on the texture, so it lives as long as the view.
+    return GetResourceCommon(texture.ptr())->CreateRenderTargetView(&viewDesc, ppView);
   };
 
   void
