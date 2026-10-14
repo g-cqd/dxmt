@@ -1,0 +1,13 @@
+name: Test Workflow
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  hello:
+    runs-on: macos-latest
+    steps:
+      - name: Say hello
+        run: echo "Hello from GitHub Actions"
