@@ -15,6 +15,7 @@
 #include "dxbc_constants.hpp"
 #include "dxbc_instructions.hpp"
 #include "nt/air_builder.hpp"
+#include "nt/dxbc_binding_map.hpp"
 #include "shader_common.hpp"
 
 #include "airconv_public.h"
@@ -165,15 +166,8 @@ struct interpolant_descriptor {
 struct io_binding_map {
   llvm::GlobalVariable *icb = nullptr;
   llvm::Value *icb_float = nullptr;
-  std::unordered_map<uint32_t, IndexedIRValue> cb_range_map{};
-  std::unordered_map<uint32_t, sampler_descriptor> sampler_range_map{};
-  std::unordered_map<uint32_t, texture_descriptor> srv_range_map{};
-  std::unordered_map<uint32_t, buffer_descriptor> srv_buf_range_map{};
-  std::unordered_map<uint32_t, texture_descriptor> uav_range_map{};
-  std::unordered_map<uint32_t, buffer_descriptor> uav_buf_range_map{};
   std::unordered_map<uint32_t, std::pair<uint32_t, llvm::GlobalVariable *>>
     tgsm_map{};
-  std::unordered_map<uint32_t, IndexedIRValue> uav_counter_range_map{};
   std::unordered_map<uint32_t, interpolant_descriptor> interpolant_map{};
 
   register_file input{};
@@ -230,6 +224,7 @@ struct io_binding_map {
 struct context {
   llvm::IRBuilder<> &builder;
   llvm::air::AIRBuilder &air;
+  BindingMap &binding;
   llvm::LLVMContext &llvm;
   llvm::Module &module;
   llvm::Function *function;
@@ -302,6 +297,7 @@ llvm::Expected<llvm::BasicBlock *> convert_basicblocks(
 
 constexpr air::MSLScalerOrVectorType to_msl_type(RegisterComponentType type) {
   switch (type) {
+  default:
   case RegisterComponentType::Unknown: {
     assert(0 && "unknown component type");
     break;
@@ -338,14 +334,27 @@ struct SignatureContext {
   bool skip_vertex_output;
   uint32_t pull_mode_reg_mask;
   uint32_t unorm_output_reg_mask;
+  // it is considered optional (as a hint)
+  air::MTLPixelFormat pixel_formats[8];
 
   SignatureContext(
-    IREffect &prologue, IRValue &epilogue, air::FunctionSignatureBuilder &func_signature, io_binding_map &resource
-  )
-      : prologue(prologue), epilogue(epilogue), func_signature(func_signature), resource(resource), ia_layout(nullptr),
-        dual_source_blending(false), disable_depth_output(false), skip_vertex_output(false), pull_mode_reg_mask(0),
-        unorm_output_reg_mask(0){};
+      IREffect &prologue, IRValue &epilogue, air::FunctionSignatureBuilder &func_signature, io_binding_map &resource
+  ) :
+      prologue(prologue),
+      epilogue(epilogue),
+      func_signature(func_signature),
+      resource(resource),
+      ia_layout(nullptr),
+      dual_source_blending(false),
+      disable_depth_output(false),
+      skip_vertex_output(false),
+      pull_mode_reg_mask(0),
+      unorm_output_reg_mask(0) {
+    memset(pixel_formats, 0, sizeof(pixel_formats));
+  };
 };
+
+RegisterComponentType component_type_from_pixel_format(air::MTLPixelFormat format);
 
 struct MeshOutputContext {
   llvm::Value *vertex_id;
@@ -452,6 +461,7 @@ public:
   microsoft::D3D10_SB_PRIMITIVE_TOPOLOGY gs_output_topology = {};
   uint32_t gs_max_vertex_output = 0;
   uint32_t gs_instance_count = 1;
+  uint32_t ps_has_coverage_output = 0;
 
   BasicBlock *entry() const {
     return bbs.front().get();
@@ -476,14 +486,16 @@ size_t estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint3
 
 size_t estimate_mesh_size(SM50ShaderInternal *pDomainStage, uint32_t max_potential_factor_int);
 
-constexpr uint32_t kConstantBufferBindIndex = 29;
-constexpr uint32_t kArgumentBufferBindIndex = 30;
+std::unique_ptr<BindingMap> setup_binding_table2(
+    const ShaderInfo *shader_info, air::FunctionSignatureBuilder &func_signature, llvm::Module &module,
+    uint32_t argbuffer_constant_slot = SM50_BINDING_INDEX_CONSTANT_BUFFER, uint32_t argbuffer_slot = SM50_BINDING_INDEX_ARGUMENT_TABLE
+);
 
-void setup_binding_table(
-  const ShaderInfo *shader_info, io_binding_map &resource_map,
-  air::FunctionSignatureBuilder &func_signature, llvm::Module &module,
-  uint32_t argbuffer_constant_slot = kConstantBufferBindIndex, 
-  uint32_t argbuffer_slot = kArgumentBufferBindIndex
+std::unique_ptr<BindingMap> setup_binding_rootsig(
+    const ShaderInfo *shader_info, air::FunctionSignatureBuilder &func_signature, llvm::Module &module,
+    microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE shader_type, const void *bytecode, size_t bytecode_length,
+    uint32_t root_sig_slot = SM50_BINDING_INDEX_ROOT_ARGUMENTS,
+    uint32_t static_sampler_slot = SM50_BINDING_INDEX_STATIC_SAMPLERS
 );
 
 void setup_metal_version(llvm::Module &module, SM50_SHADER_METAL_VERSION metal_version);

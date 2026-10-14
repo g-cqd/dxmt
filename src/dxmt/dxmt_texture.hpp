@@ -1,3 +1,21 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
 #pragma once
 #include "Metal.hpp"
 #include "dxmt_deptrack.hpp"
@@ -20,6 +38,7 @@ enum class TextureAllocationFlag : uint32_t {
   GpuManaged = 4,
   Shared = 5,
   ShaderReadonly = 6,
+  AllocatedOnHeap = 7,
 };
 
 struct TextureViewDescriptor {
@@ -107,7 +126,7 @@ public:
   }
 };
 
-class TextureAllocation : public Allocation {
+class TextureAllocation final : public Allocation {
   friend class Texture;
 
   /**
@@ -141,7 +160,8 @@ private:
       Texture *descriptor, WMT::Reference<WMT::Texture> &&texture, const WMTTextureInfo &textureDescriptor,
       Flags<TextureAllocationFlag> flags
   );
-  ~TextureAllocation();
+
+  void free();
 
   TextureAllocation(const TextureAllocation &) = delete;
   TextureAllocation(TextureAllocation &&) = delete;
@@ -231,6 +251,11 @@ public:
     return std::max(info_.height >> view.mip_start, 1u);
   }
 
+  unsigned
+  depth(TextureViewKey view) const {
+    return std::max(info_.depth >> view.mip_start, 1u);
+  }
+
   /**
   \warning for cube texture, this would be multiple of 6.
   */
@@ -259,6 +284,7 @@ public:
   TextureViewKey fullView;
 
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags);
+  Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset = 0);
   Rc<TextureAllocation> import(mach_port_t mach_port);
 
   TextureView &view(TextureViewKey key);

@@ -1,3 +1,21 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
 #include "dxbc_converter.hpp"
 #include <format>
 
@@ -385,7 +403,7 @@ void handle_signature_ps(
     unsigned reg = Inst.m_Operands[0].m_Index[0].m_RegIndex;
     auto mask = Inst.m_Operands[0].m_WriteMask >> 4;
     auto siv = Inst.m_InputPSDeclSIV.Name;
-    auto interpolation =
+    [[maybe_unused]] auto interpolation =
       to_air_interpolation(Inst.m_InputPSDeclSGV.InterpolationMode);
     uint32_t assigned_index;
     switch (siv) {
@@ -520,7 +538,24 @@ void handle_signature_ps(
       break;
     }
     case D3D11_SB_OPERAND_TYPE_OUTPUT_STENCIL_REF: {
-      assert(0 && "todo");
+      signature_handlers.push_back([=](SignatureContext &ctx) {
+        ctx.prologue << make_effect([](struct context ctx) -> std::monostate {
+          assert(ctx.resource.stencil_ref_reg == nullptr && "otherwise oStencil is defined twice");
+          ctx.resource.stencil_ref_reg = ctx.builder.CreateAlloca(ctx.types._int);
+          return {};
+        });
+      });
+      auto assigned_index = func_signature.DefineOutput(OutputStencilRef{});
+      signature_handlers.push_back([=](SignatureContext &ctx) {
+        ctx.epilogue >> [=](pvalue v) {
+          return make_irvalue([=](struct context ctx) {
+            auto ostencil = ctx.builder.CreateLoad(
+                ctx.types._int, ctx.builder.CreateConstInBoundsGEP1_32(ctx.types._int, ctx.resource.stencil_ref_reg, 0)
+            );
+            return ctx.builder.CreateInsertValue(v, ostencil, {assigned_index});
+          });
+        };
+      });
       break;
     }
     case D3D10_SB_OPERAND_TYPE_OUTPUT_COVERAGE_MASK: {
@@ -555,6 +590,7 @@ void handle_signature_ps(
           });
         };
       });
+      sm50_shader->ps_has_coverage_output = 1;
       break;
     }
 
@@ -568,8 +604,11 @@ void handle_signature_ps(
       max_output_register = std::max(reg + 1, max_output_register);
       pso_valid_output_reg_mask |= (1 << reg);
       if (sig.mask() == 0) break;
-      auto type = sig.componentType();
+      auto sig_type = sig.componentType();
       signature_handlers.push_back([=](SignatureContext &ctx) {
+        auto type = component_type_from_pixel_format(ctx.pixel_formats[reg]);
+        if (ctx.dual_source_blending || type == RegisterComponentType::Unknown)
+          type = sig_type;
         uint32_t assigned_index;
         if (ctx.dual_source_blending) {
           if (reg > 1 || reg < 0)
@@ -1057,6 +1096,8 @@ handle_signature_gs(
 
     switch (siv) {
     case D3D10_SB_NAME_POSITION:
+    case D3D10_SB_NAME_CULL_DISTANCE:
+    case D3D10_SB_NAME_CLIP_DISTANCE:
       break;
     default:
       assert(0 && "Unexpected/unhandled geometry shader siv");

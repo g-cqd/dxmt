@@ -1,3 +1,21 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
 #include "dxmt_texture.hpp"
 #include "dxmt_residency.hpp"
 #include "log/log.hpp"
@@ -73,10 +91,12 @@ TextureAllocation::TextureAllocation(
   );
 };
 
-TextureAllocation::~TextureAllocation(){
+void
+TextureAllocation::free(){
 #ifdef __i386__
   wsi::aligned_free(mappedMemory);
 #endif
+  delete this;
 };
 
 void
@@ -121,7 +141,7 @@ Texture::Texture(const WMTTextureInfo &descriptor, WMT::Device device) :
     device_(device) {
 
   viewDescriptors_.push_back({
-      .format = info_.pixel_format,
+      .format = ORIGINAL_FORMAT(info_.pixel_format),
       .type = info_.type,
       .firstMiplevel = 0,
       .miplevelCount = info_.mipmap_level_count,
@@ -145,7 +165,7 @@ Texture::Texture(
   assert(info_.array_length == 1);
 
   viewDescriptors_.push_back({
-      .format = info_.pixel_format,
+      .format = ORIGINAL_FORMAT(info_.pixel_format),
       .type = info_.type,
       .firstMiplevel = 0,
       .miplevelCount = 1,
@@ -191,6 +211,25 @@ Texture::allocate(Flags<TextureAllocationFlag> flags) {
   }
   auto texture = flags.test(TextureAllocationFlag::Shared) ? device_.newSharedTexture(info) : device_.newTexture(info);
   return new TextureAllocation(this, std::move(texture), info, flags);
+}
+
+Rc<TextureAllocation>
+Texture::allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset) {
+  WMTResourceOptions options = WMTResourceHazardTrackingModeUntracked;
+  WMTTextureInfo info = info_; // copy
+  info.mach_port = 0;
+  if (flags.test(TextureAllocationFlag::CpuWriteCombined)) {
+    options |= WMTResourceOptionCPUCacheModeWriteCombined;
+  }
+  if (flags.test(TextureAllocationFlag::CpuInvisible)) {
+    options |= WMTResourceStorageModePrivate;
+  }
+  if (flags.test(TextureAllocationFlag::GpuManaged)) {
+    options |= WMTResourceStorageModeManaged;
+  }
+  info.options = options;
+  flags.set(TextureAllocationFlag::AllocatedOnHeap);
+  return new TextureAllocation(this, heap.newTexture(info, heap_offset), info, flags);
 }
 
 Rc<TextureAllocation>

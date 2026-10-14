@@ -118,6 +118,8 @@ convert_dxbc_geometry_shader(
     metal_version = sm50_common->metal_version;
     shader_flags = sm50_common->flags;
   }
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
   IREffect prologue([](auto) { return std::monostate(); });
   IRValue epilogue([](struct context ctx) -> pvalue { return nullptr; });
@@ -163,7 +165,11 @@ convert_dxbc_geometry_shader(
     }
   }
 
-  setup_binding_table(shader_info, resource_map, func_signature, module);
+  auto binding_map = rootsig ? setup_binding_rootsig(
+                                   shader_info, func_signature, module, D3D10_SB_GEOMETRY_SHADER, rootsig->bytecode,
+                                   rootsig->bytecode_length
+                               )
+                             : setup_binding_table2(shader_info, func_signature, module);
 
   auto gs_output_topology = pShaderInternal->gs_output_topology;
   int32_t max_vertex_out = pShaderInternal->gs_max_vertex_output;
@@ -419,7 +425,7 @@ convert_dxbc_geometry_shader(
     }
   };
 
-  if (is_strip) {
+  if (is_strip && pShaderInternal->gs_input_primitive != D3D10_SB_PRIMITIVE_POINT) {
     auto leading_vertex_index = primitive_id_in_warp;
     switch (pShaderInternal->gs_input_primitive) {
     case microsoft::D3D10_SB_PRIMITIVE_TRIANGLE: {
@@ -502,9 +508,18 @@ convert_dxbc_geometry_shader(
     }
   }
 
-  struct context ctx {
-    .builder = builder, .air = air, .llvm = context, .module = module, .function = function, .resource = resource_map,
-    .types = types, .pso_sample_mask = 0xffffffff, .shader_type = pShaderInternal->shader_type, .metal_version = metal_version,
+  struct context ctx{
+      .builder = builder,
+      .air = air,
+      .binding = *binding_map,
+      .llvm = context,
+      .module = module,
+      .function = function,
+      .resource = resource_map,
+      .types = types,
+      .pso_sample_mask = 0xffffffff,
+      .shader_type = pShaderInternal->shader_type,
+      .metal_version = metal_version,
   };
 
   if (auto err = prologue.build(ctx).takeError()) {
@@ -557,6 +572,8 @@ convert_dxbc_vertex_for_geometry_shader(
     metal_version = sm50_common->metal_version;
     shader_flags = sm50_common->flags;
   }
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
   bool is_triadj_strip = is_strip && pGeometryStage->gs_input_primitive == D3D10_SB_PRIMITIVE_TRIANGLE_ADJ;
   bool is_indexed_draw = ia_layout && ia_layout->index_buffer_format > 0;
@@ -582,7 +599,11 @@ convert_dxbc_vertex_for_geometry_shader(
     }
   }
 
-  setup_binding_table(shader_info, resource_map, func_signature, module);
+  auto binding_map = rootsig ? setup_binding_rootsig(
+                                   shader_info, func_signature, module, D3D10_SB_VERTEX_SHADER, rootsig->bytecode,
+                                   rootsig->bytecode_length
+                               )
+                             : setup_binding_table2(shader_info, func_signature, module);
 
   uint32_t payload_idx = func_signature.DefineInput(air::InputPayload{.size = 16256});
   // (warp_size, 1, 1)
@@ -593,7 +614,7 @@ convert_dxbc_vertex_for_geometry_shader(
   func_signature.DefineInput(air::InputMeshGridProperties{});
   uint32_t draw_argument_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
-      .location_index = 21,
+      .location_index = SM50_BINDING_INDEX_DRAW_ARGUMENTS,
       .array_size = 0,
       .memory_access = air::MemoryAccess::read,
       .address_space = air::AddressSpace::constant,
@@ -608,7 +629,7 @@ convert_dxbc_vertex_for_geometry_shader(
   if (is_indexed_draw) {
     index_buffer_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
         .buffer_size = {},
-        .location_index = 20,
+        .location_index = SM50_BINDING_INDEX_INDEX_BUFFER,
         .array_size = 0,
         .memory_access = air::MemoryAccess::read,
         .address_space = air::AddressSpace::device,
@@ -696,9 +717,18 @@ convert_dxbc_vertex_for_geometry_shader(
   setup_temp_register(shader_info, resource_map, types, module, builder);
   setup_immediate_constant_buffer(shader_info, resource_map, types, module, builder);
 
-  struct context ctx {
-    .builder = builder, .air = air, .llvm = context, .module = module, .function = function, .resource = resource_map,
-    .types = types, .pso_sample_mask = 0xffffffff, .shader_type = pShaderInternal->shader_type, .metal_version = metal_version,
+  struct context ctx{
+      .builder = builder,
+      .air = air,
+      .binding = *binding_map,
+      .llvm = context,
+      .module = module,
+      .function = function,
+      .resource = resource_map,
+      .types = types,
+      .pso_sample_mask = 0xffffffff,
+      .shader_type = pShaderInternal->shader_type,
+      .metal_version = metal_version,
   };
 
   auto global_index_id =
@@ -817,7 +847,7 @@ convert_dxbc_vertex_for_geometry_shader(
     pvalue primitive_valid_result = builder.getInt1(1);
     uint32_t primitive_vertices_mask = 0;
     // TODO: check primitive is valid
-    if (is_strip) {
+    if (is_strip && pGeometryStage->gs_input_primitive != D3D10_SB_PRIMITIVE_POINT) {
       switch (pGeometryStage->gs_input_primitive) {
       case microsoft::D3D10_SB_PRIMITIVE_TRIANGLE: {
         primitive_vertices_mask = 0b111 << primitive_id;

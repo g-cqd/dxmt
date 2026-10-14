@@ -150,10 +150,7 @@ struct TessMeshWorkload {
 
 int
 get_next_index(threadgroup int *out_count) {
-  // Public API instead of the private __metal_atomic_fetch_add_explicit builtin, whose
-  // signature changed in newer Metal toolchains (32023: 5 arguments). Same operation:
-  // relaxed add, threadgroup scope.
-  return atomic_fetch_add_explicit((threadgroup atomic_int *)out_count, 1, memory_order_relaxed);
+  return atomic_fetch_add_explicit(reinterpret_cast<threadgroup atomic_int *>(out_count), 1, memory_order_relaxed);
 }
 
 template <partitioning partition>

@@ -55,7 +55,8 @@ struct MTL_DXGI_FORMAT_DESC {
     uint32_t BytesPerTexel;
     uint32_t BlockSize;
   };
-  uint32_t Flag;
+  uint16_t PlanarCount;
+  uint16_t Flag;
 };
 
 int32_t MTLQueryDXGIFormat(WMT::Device device, uint32_t format, MTL_DXGI_FORMAT_DESC &description);
@@ -67,5 +68,7 @@ WMTPixelFormat MTLGetUnsignedIntegerFormat(WMTPixelFormat format);
 bool IsUnorm8RenderTargetFormat(WMTPixelFormat format);
 
 bool IsIntegerFormat(WMTPixelFormat format);
+
+void SanitizeRTVClearColor(WMTPixelFormat format, WMTClearColor &color);
 
 } // namespace dxmt

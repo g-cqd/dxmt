@@ -3,6 +3,7 @@
 #include "dxmt_dynamic.hpp"
 #include "dxmt_staging.hpp"
 #include "dxmt_texture.hpp"
+#include "dxmt_keyed_mutex.hpp"
 #include "d3d11_device_child.hpp"
 #include "com/com_pointer.hpp"
 #include "com/com_guid.hpp"
@@ -137,6 +138,7 @@ struct D3D11ResourceCommon : ID3D11Resource {
   Rc<Buffer> buffer_{};
   Rc<Texture> texture_{};
   uint32_t bind_flags_{};
+  Rc<KeyedMutex> keyed_mutex_{};
 
   const Rc<Buffer> &buffer() const {
     return buffer_;
@@ -151,6 +153,9 @@ struct D3D11ResourceCommon : ID3D11Resource {
   hazardsFree() const {
     return (bind_flags_ & (D3D11_BIND_STREAM_OUTPUT | D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET |
                            D3D11_BIND_DEPTH_STENCIL)) == 0;
+  }
+  const Rc<KeyedMutex> &keyedMutex() const {
+    return keyed_mutex_;
   }
 };
 
@@ -186,7 +191,8 @@ public:
   TResourceBase(const tag::DESC1 &desc, MTLD3D11Device *device) :
       MTLD3D11DeviceChild<D3D11ResourceCommon, Base...>(device),
       desc(desc),
-      dxgi_resource(new MTLDXGIResource<TResourceBase<tag, Base...>>(this)),
+      dxgi_resource(this),
+      keyed_mutex(this, device->GetImmediateContextPrivate()),
       d3d10(reinterpret_cast<tag::COM *>(this), device->GetImmediateContextPrivate()) {
     // D3D11ResourceCommonß::bind_flags_
     this->bind_flags_ = desc.BindFlags;
@@ -234,7 +240,14 @@ public:
     if (riid == __uuidof(IDXGIObject) ||
         riid == __uuidof(IDXGIDeviceSubObject) ||
         riid == __uuidof(IDXGIResource) || riid == __uuidof(IDXGIResource1)) {
-      *ppvObject = ref(dxgi_resource.get());
+      *ppvObject = ref(&dxgi_resource);
+      return S_OK;
+    }
+  
+    if (riid == __uuidof(IDXGIKeyedMutex)) {
+      if (!(this->desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX))
+        return E_NOINTERFACE;
+      *ppvObject = ref(&keyed_mutex);
       return S_OK;
     }
 
@@ -306,7 +319,8 @@ public:
 
 protected:
   tag::DESC1 desc;
-  std::unique_ptr<IDXGIResource1> dxgi_resource;
+  MTLDXGIResource<TResourceBase<tag, Base...>> dxgi_resource;
+  MTLDXGIKeyedMutex<TResourceBase<tag, Base...>, IMTLD3D11DeviceContext> keyed_mutex;
   tag::D3D10_IMPL d3d10;
 };
 

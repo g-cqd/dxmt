@@ -149,6 +149,8 @@ public:
       D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
+    if (unlikely(!pResource))
+      return E_INVALIDARG;
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
       if (!pMappedResource)
         return E_INVALIDARG;
@@ -272,6 +274,9 @@ public:
       }
       return S_OK;
     }
+    if (pMappedResource == nullptr) {
+      UNIMPLEMENTED("map-on-default: map");
+    }
     return E_FAIL;
   }
 
@@ -280,6 +285,8 @@ public:
   Unmap(ID3D11Resource *pResource, UINT Subresource) override {
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
+    if (unlikely(!pResource))
+      return;
     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
       BlitObject texture(device, pResource);
       UpdateTexture(TextureUpdateCommand(texture, Subresource, nullptr),
@@ -464,6 +471,15 @@ public:
   STDMETHODCALLTYPE
   GetContextFlags() override {
     return context_flag;
+  }
+
+  HRESULT
+  AcquireSync(ID3D11Resource *pResource, UINT64 Key, DWORD dwMilliseconds) override {
+    return DXGI_ERROR_INVALID_CALL;
+  }
+  HRESULT
+  ReleaseSync(ID3D11Resource *pResource, UINT64 Key) override {
+    return DXGI_ERROR_INVALID_CALL;
   }
 
 private:

@@ -4,6 +4,7 @@
 #include "dxgi_object.hpp"
 #include "com/com_guid.hpp"
 #include "log/log.hpp"
+#include "util_hotpatch.h"
 #include "util_string.hpp"
 #include "wsi_window.hpp"
 #include "Metal.hpp"
@@ -64,6 +65,7 @@ public:
     return DXGI_ERROR_UNSUPPORTED;
   }
 
+  DXMT_HOTPATCHABLE
   HRESULT STDMETHODCALLTYPE
   CreateSwapChain(IUnknown *pDevice, DXGI_SWAP_CHAIN_DESC *pDesc,
                   IDXGISwapChain **ppSwapChain) final {
@@ -97,6 +99,7 @@ public:
     return hr;
   }
 
+  DXMT_HOTPATCHABLE
   HRESULT STDMETHODCALLTYPE CreateSwapChainForHwnd(
       IUnknown *pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       const DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pFullscreenDesc,
@@ -106,8 +109,8 @@ public:
     if (!ppSwapChain || !pDesc || !hWnd || !pDevice)
       return DXGI_ERROR_INVALID_CALL;
 
-    Com<IMTLDXGIDevice> metal_dxgi_device;
-    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&metal_dxgi_device)))) {
+    Com<IMTLSwapChainFactory> swapchain_factory;
+    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&swapchain_factory)))) {
       ERR("Unsupported device type");
       return DXGI_ERROR_UNSUPPORTED;
     }
@@ -131,10 +134,11 @@ public:
       fsDesc.Windowed = TRUE;
     }
 
-    return metal_dxgi_device->CreateSwapChain(this, hWnd, &desc, &fsDesc,
+    return swapchain_factory->CreateSwapChain(this, hWnd, &desc, &fsDesc,
                                               ppSwapChain);
   }
 
+  DXMT_HOTPATCHABLE
   HRESULT STDMETHODCALLTYPE CreateSwapChainForCoreWindow(
       IUnknown *pDevice, IUnknown *pWindow, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
@@ -144,6 +148,7 @@ public:
     return E_NOTIMPL;
   }
 
+  DXMT_HOTPATCHABLE
   HRESULT STDMETHODCALLTYPE CreateSwapChainForComposition(
       IUnknown *pDevice, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
@@ -256,10 +261,22 @@ public:
 
   UINT STDMETHODCALLTYPE GetCreationFlags() override { return flags_; }
 
-  HRESULT STDMETHODCALLTYPE EnumAdapterByLuid(LUID luid, REFIID iid,
-                                              void **adapter) override {
-    ERR("DXGIFactory::EnumAdapterByLuid: not implemented");
-    return DXGI_ERROR_NOT_FOUND;
+  HRESULT STDMETHODCALLTYPE EnumAdapterByLuid(LUID luid, REFIID riid,
+                                              void **ppAdapter) override {
+    InitReturnPtr(ppAdapter);
+
+    // luid ignored, since Apple Silicon has only 1 GPU anyway
+    Com<IDXGIAdapter1> adapter;
+    HRESULT hr = this->EnumAdapters1(0, &adapter);
+    if (FAILED(hr))
+      return hr;
+
+    DXGI_ADAPTER_DESC desc;
+    adapter->GetDesc(&desc);
+    if (desc.AdapterLuid.HighPart != luid.HighPart || desc.AdapterLuid.LowPart != luid.LowPart)
+      WARN("EnumAdapterByLuid: returning an adapter with mismatched luid");
+
+    return adapter->QueryInterface(riid, ppAdapter);
   }
 
   HRESULT STDMETHODCALLTYPE EnumWarpAdapter(REFIID iid,

@@ -1,11 +1,25 @@
+/*
+ * This file is included by d3d11_context_{imm|def}.cpp
+ * and should be not used as a compilation unit
+ * since it is for internal use only (and I don't want to deal with several thousands line of code)
+ *
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
 
-/**
-This file is included by d3d11_context_{imm|def}.cpp
-and should be not used as a compilation unit
-
-since it is for internal use only
-(and I don't want to deal with several thousands line of code)
-*/
 #include "Metal.hpp"
 #include "d3d11_annotation.hpp"
 #include "d3d11_context.hpp"
@@ -307,6 +321,7 @@ public:
   MTL_DXGI_FORMAT_DESC SrcFormat;
   MTL_DXGI_FORMAT_DESC DstFormat;
 
+  bool DimensionIncompatible;
   bool Invalid = true;
 
   TextureCopyCommand(
@@ -318,9 +333,8 @@ public:
       SrcSubresource(SrcSubresource),
       DstSubresource(DstSubresource),
       SrcFormat(Src_.FormatDescription),
-      DstFormat(Dst_.FormatDescription) {
-    if (Dst_.Dimension != Src_.Dimension)
-      return;
+      DstFormat(Dst_.FormatDescription),
+      DimensionIncompatible(Dst_.Dimension != Src_.Dimension) {
 
     if (SrcFormat.PixelFormat == WMTPixelFormatInvalid)
       return;
@@ -333,14 +347,7 @@ public:
     }
     case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
       D3D11_TEXTURE1D_DESC &dst_desc = Dst_.Texture1DDesc;
-      D3D11_TEXTURE1D_DESC &src_desc = Src_.Texture1DDesc;
-
-      Src.Format = src_desc.Format;
-      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
-      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
-      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
-      Src.Height = 1;
-      Src.Depth = 1;
+      if (DstSubresource >= dst_desc.MipLevels * dst_desc.ArraySize) return;
 
       Dst.Format = dst_desc.Format;
       Dst.MipLevel = DstSubresource % dst_desc.MipLevels;
@@ -352,14 +359,7 @@ public:
     }
     case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
       D3D11_TEXTURE2D_DESC1 &dst_desc = Dst_.Texture2DDesc;
-      D3D11_TEXTURE2D_DESC1 &src_desc = Src_.Texture2DDesc;
-
-      Src.Format = src_desc.Format;
-      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
-      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
-      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
-      Src.Height = std::max(1u, src_desc.Height >> Src.MipLevel);
-      Src.Depth = 1;
+      if (DstSubresource >= dst_desc.MipLevels * dst_desc.ArraySize) return;
 
       Dst.Format = dst_desc.Format;
       Dst.MipLevel = DstSubresource % dst_desc.MipLevels;
@@ -371,14 +371,7 @@ public:
     }
     case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
       D3D11_TEXTURE3D_DESC1 &dst_desc = Dst_.Texture3DDesc;
-      D3D11_TEXTURE3D_DESC1 &src_desc = Src_.Texture3DDesc;
-
-      Src.Format = src_desc.Format;
-      Src.MipLevel = SrcSubresource;
-      Src.ArraySlice = 0;
-      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
-      Src.Height = std::max(1u, src_desc.Height >> Src.MipLevel);
-      Src.Depth = std::max(1u, src_desc.Depth >> Src.MipLevel);
+      if (DstSubresource >= dst_desc.MipLevels) return;
 
       Dst.Format = dst_desc.Format;
       Dst.MipLevel = DstSubresource;
@@ -386,7 +379,50 @@ public:
       Dst.Width = std::max(1u, dst_desc.Width >> Dst.MipLevel);
       Dst.Height = std::max(1u, dst_desc.Height >> Dst.MipLevel);
       Dst.Depth = std::max(1u, dst_desc.Depth >> Dst.MipLevel);
+      break;
+    }
+    }
 
+    switch (Src_.Dimension) {
+    default: {
+      return;
+    }
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D: {
+      D3D11_TEXTURE1D_DESC &src_desc = Src_.Texture1DDesc;
+      if (SrcSubresource >= src_desc.MipLevels * src_desc.ArraySize) return;
+
+      Src.Format = src_desc.Format;
+      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
+      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
+      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
+      Src.Height = 1;
+      Src.Depth = 1;
+
+      break;
+    }
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D: {
+      D3D11_TEXTURE2D_DESC1 &src_desc = Src_.Texture2DDesc;
+      if (SrcSubresource >= src_desc.MipLevels * src_desc.ArraySize) return;
+
+      Src.Format = src_desc.Format;
+      Src.MipLevel = SrcSubresource % src_desc.MipLevels;
+      Src.ArraySlice = SrcSubresource / src_desc.MipLevels;
+      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
+      Src.Height = std::max(1u, src_desc.Height >> Src.MipLevel);
+      Src.Depth = 1;
+
+      break;
+    }
+    case D3D11_RESOURCE_DIMENSION_TEXTURE3D: {
+      D3D11_TEXTURE3D_DESC1 &src_desc = Src_.Texture3DDesc;
+      if (SrcSubresource >= src_desc.MipLevels) return;
+
+      Src.Format = src_desc.Format;
+      Src.MipLevel = SrcSubresource;
+      Src.ArraySlice = 0;
+      Src.Width = std::max(1u, src_desc.Width >> Src.MipLevel);
+      Src.Height = std::max(1u, src_desc.Height >> Src.MipLevel);
+      Src.Depth = std::max(1u, src_desc.Depth >> Src.MipLevel);
       break;
     }
     }
@@ -819,8 +855,8 @@ public:
         return ClearRenderTargetView(rtv, Color);
       }
       InvalidateCurrentPass(true);
-      EmitST([texture = rtv->texture(), view = rtv->viewId()](ArgumentEncodingContext &enc) {
-        enc.clear_rt_cmd.begin(texture, view);
+      EmitST([texture = rtv->texture(), view = rtv->viewId(), plane = rtv->description().DepthPlane](ArgumentEncodingContext &enc) {
+        enc.clear_rt_cmd.begin(texture, view, plane);
       });
       for (unsigned i = 0; i < NumRects; i++) {
         auto rect = pRect[i];
@@ -830,8 +866,8 @@ public:
         int32_t rect_height = rect.bottom - rect_offset_y;
         if (rect_height <= 0 || rect_width <= 0)
           continue;
-        EmitOP([=](ArgumentEncodingContext &enc) {
-          enc.clear_rt_cmd.clear(rect_offset_x, rect_offset_y, rect_width, rect_height, color);
+        EmitOP([=, array_length = rtv->description().RenderTargetArrayLength](ArgumentEncodingContext &enc) {
+          enc.clear_rt_cmd.clear(rect_offset_x, rect_offset_y, rect_width, rect_height, array_length, color);
         });
       }
       EmitST([](ArgumentEncodingContext &enc) { 
@@ -861,7 +897,7 @@ public:
       }
       InvalidateCurrentPass(true);
       EmitST([texture = dsv->texture(), view = dsv->viewId()](ArgumentEncodingContext &enc) {
-        enc.clear_rt_cmd.begin(texture, view);
+        enc.clear_rt_cmd.begin(texture, view, 0, D3D11_CLEAR_DEPTH);
       });
       for (unsigned i = 0; i < NumRects; i++) {
         auto rect = pRect[i];
@@ -871,8 +907,8 @@ public:
         int32_t rect_height = rect.bottom - rect_offset_y;
         if (rect_height <= 0 || rect_width <= 0)
           continue;
-        EmitOP([=](ArgumentEncodingContext &enc) {
-          enc.clear_rt_cmd.clear(rect_offset_x, rect_offset_y, rect_width, rect_height, color);
+        EmitOP([=, depth = color[0]](ArgumentEncodingContext &enc) {
+          enc.clear_rt_cmd.clear(rect_offset_x, rect_offset_y, rect_width, rect_height, depth, 0);
         });
       }
       EmitST([](ArgumentEncodingContext &enc) { 
@@ -889,17 +925,16 @@ public:
       if (desc.ViewDimension != D3D11_UAV_DIMENSION_BUFFER) {
         EmitST([=, texture = uav->texture(),
                 view = uav->viewId()](ArgumentEncodingContext &enc) {
-          enc.clear_res_cmd.begin(color, texture, view);
+          enc.clear_uav_cmd.begin(color, texture.ptr(), view);
         });
       } else if (desc.Buffer.Flags & D3D11_BUFFER_UAV_FLAG_RAW) {
         EmitST([=, buffer = uav->buffer(),
                 view = uav->viewId()](ArgumentEncodingContext &enc) {
-          enc.clear_res_cmd.begin(color, buffer, view);
+          enc.clear_uav_cmd.begin(color, buffer.ptr(), view);
         });
       } else {
         EmitST([=, buffer = uav->buffer()](ArgumentEncodingContext &enc) {
-          /* FIXME: raw buffer always considered unsigned integer? */
-          enc.clear_res_cmd.begin(color, buffer, true);
+          enc.clear_uav_cmd.begin(color, buffer.ptr());
         });
       }
       for (unsigned i = 0; i < NumRects; i++) {
@@ -911,10 +946,10 @@ public:
         if (rect_height <= 0 || rect_width <= 0)
           continue;
         EmitOP([=](ArgumentEncodingContext &enc) {
-          enc.clear_res_cmd.clear(rect_offset_x, rect_offset_y, rect_width, rect_height);
+          enc.clear_uav_cmd.clear(rect_offset_x, rect_offset_y, rect_width, rect_height);
         });
       }
-      EmitST([](ArgumentEncodingContext &enc) { enc.clear_res_cmd.end(); });
+      EmitST([](ArgumentEncodingContext &enc) { enc.clear_uav_cmd.end(); });
       return;
     }
   }
@@ -1097,6 +1132,8 @@ public:
       break;
     }
     default:
+      if (Src.Dimension == D3D11_RESOURCE_DIMENSION_BUFFER)
+        return;
       CopyTexture(TextureCopyCommand(Dst, DstSubresource, DstX, DstY, DstZ, Src, SrcSubresource, pSrcBox));
       break;
     }
@@ -1108,12 +1145,30 @@ public:
       override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto dst_bind = GetResourceCommon(pDstBuffer)) {
-      if (auto uav = static_cast<D3D11UnorderedAccessView *>(pSrcView)) {
+    if (auto uav = static_cast<D3D11UnorderedAccessView *>(pSrcView)) {
+      if (!uav->hasCounter())
+        return;
+      if (auto staging_dst = GetStagingResource(pDstBuffer, 0)) {
+        SwitchToBlitEncoder(CommandBufferState::ReadbackBlitEncoderActive);
+        UseCopyDestination(staging_dst);
+        EmitOP([=, dst_ = std::move(staging_dst), counter = uav->counter(),
+                uav_buffer = uav->buffer()](ArgumentEncodingContext &enc) {
+          auto [dst_buffer, dst_offset] = enc.access(dst_->buffer(), DstAlignedByteOffset, 4, ResourceAccess::Write);
+          auto [counter_buffer, counter_offset] = enc.access(counter, uav_buffer);
+          auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+          cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
+          cmd.copy_length = 4;
+          cmd.src = counter_buffer->buffer();
+          cmd.src_offset = counter_offset;
+          cmd.dst = dst_buffer->buffer();
+          cmd.dst_offset = DstAlignedByteOffset + dst_offset;
+        });
+      } else if (auto dst_bind = GetResourceCommon(pDstBuffer)) {
         SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
-        EmitOP([=, dst = dst_bind->buffer(), counter = uav->counter()](ArgumentEncodingContext &enc) {
+        EmitOP([=, dst = dst_bind->buffer(), counter = uav->counter(),
+                uav_buffer = uav->buffer()](ArgumentEncodingContext &enc) {
           auto [dst_buffer, dst_offset] = enc.access(dst, DstAlignedByteOffset, 4, ResourceAccess::Write);
-          auto [counter_buffer, counter_offset] = enc.access(counter, 0, 4, ResourceAccess::Read);
+          auto [counter_buffer, counter_offset] = enc.access(counter, uav_buffer);
           auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
           cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
           cmd.copy_length = 4;
@@ -1238,6 +1293,8 @@ public:
   void
   STDMETHODCALLTYPE
   Draw(UINT VertexCount, UINT StartVertexLocation) override {
+    if (unlikely(!VertexCount))
+      return;
     std::lock_guard<mutex_t> lock(mutex);
 
     WMTPrimitiveType Primitive;
@@ -1269,10 +1326,10 @@ public:
   void
   STDMETHODCALLTYPE
   DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) override {
+    if (unlikely(!IndexCount))
+      return;
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (!IndexCount)
-      return;
     WMTPrimitiveType Primitive;
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
@@ -1312,6 +1369,8 @@ public:
   STDMETHODCALLTYPE
   DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation)
       override {
+    if (unlikely(!VertexCountPerInstance || !InstanceCount))
+      return;
     std::lock_guard<mutex_t> lock(mutex);
 
     WMTPrimitiveType Primitive;
@@ -1349,10 +1408,10 @@ public:
       UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation, INT BaseVertexLocation,
       UINT StartInstanceLocation
   ) override {
+    if (unlikely(!IndexCountPerInstance || !InstanceCount))
+      return;
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (!IndexCountPerInstance)
-      return;
     WMTPrimitiveType Primitive;
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
@@ -2207,11 +2266,8 @@ public:
     if (!ValidateMultiSOTargets(NumBuffers, ppSOTargets))
       return;
 
-    if (NumBuffers == 0) {
-      NumBuffers = 4; // see msdn description of SOSetTargets
-    }
-    for (unsigned slot = 0; slot < NumBuffers; slot++) {
-      auto pBuffer = ppSOTargets ? GetResourceCommon(ppSOTargets[slot]) : nullptr;
+    for (unsigned slot = 0; slot < D3D11_SO_BUFFER_SLOT_COUNT; slot++) {
+      auto pBuffer = slot < NumBuffers ? GetResourceCommon(ppSOTargets[slot]) : nullptr;
       if (pBuffer && (pBuffer->bindFlags() & D3D11_BIND_STREAM_OUTPUT)) {
         bool replaced = false;
         auto &entry = state_.StreamOutput.Targets.bind(slot, {pBuffer}, replaced);
@@ -2220,6 +2276,9 @@ public:
           if (offset != entry.Offset) {
             state_.StreamOutput.Targets.set_dirty(slot);
             entry.Offset = offset;
+            EmitST([=, buffer = pBuffer->buffer()](ArgumentEncodingContext &enc) mutable {
+              enc.bindStreamOutputBufferOffset(slot, offset);
+            });
           }
           continue;
         }
@@ -2234,8 +2293,14 @@ public:
          * - DSV can't even be a buffer
          * - RTV is questionable: we don't support buffer-backed RTV at the moment
          */
+        EmitST([=, buffer = pBuffer->buffer()](ArgumentEncodingContext &enc) mutable {
+          enc.bindStreamOutputBuffer(slot, entry.Offset, forward_rc(buffer), {});
+        });
       } else {
         state_.StreamOutput.Targets.unbind(slot);
+        EmitST([=](ArgumentEncodingContext &enc) mutable {
+          enc.bindStreamOutputBuffer(slot, 0, {}, {});
+        });
       }
     }
   }
@@ -2247,7 +2312,7 @@ public:
 
     if (!ppSOTargets)
       return;
-    for (unsigned i = 0; i < std::min(4u, NumBuffers); i++) {
+    for (unsigned i = 0; i < std::min<uint32_t>(D3D11_SO_BUFFER_SLOT_COUNT, NumBuffers); i++) {
       if (state_.StreamOutput.Targets.test_bound(i)) {
         state_.StreamOutput.Targets[i].Buffer->QueryInterface(IID_PPV_ARGS(&ppSOTargets[i]));
       } else {
@@ -2260,7 +2325,7 @@ public:
                                UINT *pOffsets) override {
     std::lock_guard<mutex_t> lock(mutex);
 
-    for (unsigned i = 0; i < std::min(4u, NumBuffers); i++) {
+    for (unsigned i = 0; i < std::min<uint32_t>(D3D11_SO_BUFFER_SLOT_COUNT, NumBuffers); i++) {
       if (state_.StreamOutput.Targets.test_bound(i)) {
         if (ppSOTargets)
           state_.StreamOutput.Targets[i].Buffer->QueryInterface(riid, &ppSOTargets[i]);
@@ -3654,15 +3719,12 @@ public:
 
   void
   UpdateUAVCounter(D3D11UnorderedAccessView *uav, uint32_t value) {
+    if (!uav->hasCounter())
+      return;
     EmitST([counter = uav->counter(), value](ArgumentEncodingContext &enc) {
       if (!counter.ptr())
         return;
-      /* TODO: suballocate uav counter */
-      auto new_counter = counter->allocate(BufferAllocationFlag::GpuManaged | BufferAllocationFlag::NoTracking);
-      new_counter->updateContents(0, &value, 4);
-      new_counter->buffer().didModifyRange(0, 4);
-      auto old = counter->rename(std::move(new_counter));
-      // TODO: reused discarded buffer
+      enc.queue().counter_pool.updateCounter(counter, value);
     });
   }
 
@@ -3739,7 +3801,7 @@ public:
           entry.Offset = pOffsets[slot - StartSlot];
         } else {
           ERR("SetVertexBuffers: offset is null");
-          entry.Stride = 0;
+          entry.Offset = 0;
         }
         entry.Buffer = pVertexBuffer;
           EmitST([=, buffer = entry.Buffer->buffer(), offset = entry.Offset,
@@ -4015,7 +4077,7 @@ public:
           auto dst_format = dst_->pixelFormat();
           auto src = enc.access(src_, cmd.Src.MipLevel, cmd.Src.ArraySlice, ResourceAccess::Read);
           auto dst = enc.access(dst_, cmd.Dst.MipLevel, cmd.Dst.ArraySlice, ResourceAccess::Write);
-          if (Forget_sRGB(dst_format) != Forget_sRGB(src_format)) {
+          if (Forget_sRGB(dst_format) != Forget_sRGB(src_format) || cmd.DimensionIncompatible) {
 
             // bitcast, using a temporary buffer
             size_t bytes_per_row, bytes_per_image, bytes_total;
@@ -4413,6 +4475,10 @@ public:
     state_.ShaderStages[PipelineStage::Geometry].Samplers.set_dirty();
     state_.ShaderStages[PipelineStage::Geometry].SRVs.set_dirty();
     state_.InputAssembler.VertexBuffers.set_dirty();
+    {
+      if (state_.StreamOutput.Targets.any_bound())
+        state_.StreamOutput.Targets.set_dirty();
+    }
     state_.OutputMerger.UAVs.set_dirty();
     dirty_state.set(
         DirtyState::BlendFactorAndStencilRef, DirtyState::RasterizerState, DirtyState::DepthStencilState,
@@ -4996,56 +5062,21 @@ public:
 
   void
   UpdateSOTargets() {
-    if (!state_.ShaderStages[PipelineStage::Geometry].Shader) {
+    if (!state_.ShaderStages[PipelineStage::Geometry].Shader)
       return;
-    }
-    /**
-    FIXME: support all slots
-     */
-    if (!state_.StreamOutput.Targets.test_dirty(0)) {
+    if (!state_.StreamOutput.Targets.any_dirty())
       return;
-    }
-    if (state_.StreamOutput.Targets.test_bound(0)) {
-      auto &so_slot0 = state_.StreamOutput.Targets[0];
-      if (so_slot0.Offset == 0xFFFFFFFF) {
-        EmitST([slot0 = so_slot0.Buffer->buffer()](ArgumentEncodingContext &enc) {
-          auto [buffer, buffer_offset] =
-              enc.access<PipelineStage::Geometry>(slot0, 0, slot0->length(), ResourceAccess::Write);
-          auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setbuffer>();
-          cmd.type = WMTRenderCommandSetVertexBuffer;
-          cmd.buffer = buffer->buffer();
-          cmd.offset = buffer_offset;
-          cmd.index = 20;
-          enc.makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(slot0.ptr(), false, true);
-          enc.setCompatibilityFlag(FeatureCompatibility::UnsupportedStreamOutputAppending);
-        });
-      } else {
-        EmitST([slot0 = so_slot0.Buffer->buffer(), offset = so_slot0.Offset](ArgumentEncodingContext &enc) {
-          auto [buffer, buffer_offset] =
-              enc.access<PipelineStage::Geometry>(slot0, 0, slot0->length(), ResourceAccess::Write);
-          auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setbuffer>();
-          cmd.type = WMTRenderCommandSetVertexBuffer;
-          cmd.buffer = buffer->buffer();
-          cmd.offset = offset + buffer_offset;
-          cmd.index = 20;
-          enc.makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(slot0.ptr(), false, true);
-        });
-      }
-    } else {
-      EmitST([](ArgumentEncodingContext &enc) {
-        auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setbuffer>();
-        cmd.type = WMTRenderCommandSetVertexBuffer;
-        cmd.buffer = NULL_OBJECT_HANDLE;
-        cmd.offset = 0;
-        cmd.index = 20;
-      });
-    }
-    state_.StreamOutput.Targets.clear_dirty(0);
-    if (state_.StreamOutput.Targets.any_dirty()) {
-      EmitST([](ArgumentEncodingContext &enc) {
-        enc.setCompatibilityFlag(FeatureCompatibility::UnsupportedMultipleStreamOutput);
-      });
-    }
+
+    auto offset = PreAllocateArgumentBuffer(16 /* size of two pointer */ * kStreamOutputSlots, 32);
+
+    if (cmdbuf_state == CommandBufferState::RenderPipelineReady)
+      EmitST([=](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Ordinary>(offset); });
+    else if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady)
+      EmitST([=](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Tessellation>(offset); });
+    else if (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady)
+      EmitST([=](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Geometry>(offset); });
+
+    state_.StreamOutput.Targets.clear_dirty();
   }
 
   template <PipelineStage Stage>
@@ -5276,6 +5307,7 @@ public:
       if(output->pixelFormat() != entry.output_pixel_format) continue;
       if(depth->pixelFormat() != entry.depth_pixel_format) continue;
       if(motion_vector_format != entry.motion_vector_pixel_format) continue;
+      if(pDesc->MotionVectorInDisplayRes != (entry.mv_downscaled != nullptr)) continue;
 
       scaler = entry.scaler;
       mv_downscaled = entry.mv_downscaled;
@@ -5315,7 +5347,7 @@ public:
         tex_info.depth = 1;
         tex_info.array_length = 1;
         tex_info.mipmap_level_count = 1;
-        tex_info.pixel_format = WMTPixelFormatRG32Float;
+        tex_info.pixel_format = motion_vector_format;
         tex_info.sample_count = 1;
         tex_info.type = WMTTextureType2D;
         tex_info.usage = WMTTextureUsageShaderRead | WMTTextureUsageShaderWrite;
@@ -5375,7 +5407,7 @@ public:
         WMTFXTemporalScalerProps new_props = props;
         new_props.motion_vector_scale_x = 1.0;
         new_props.motion_vector_scale_y = 1.0;
-        enc.upscaleTemporal(input, output, depth, mv_downscaled, 0, exposure, scaler, new_props);
+        enc.upscaleTemporal(input, output, depth, mv_downscaled, mv_downscaled->fullView, exposure, scaler, new_props);
       } else {
         enc.upscaleTemporal(input, output, depth, motion_vector, mv_view, exposure, scaler, props);
       }

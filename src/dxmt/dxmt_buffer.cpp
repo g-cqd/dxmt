@@ -1,3 +1,21 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
 #include "dxmt_buffer.hpp"
 #include "dxmt_format.hpp"
 #include "log/log.hpp"
@@ -38,11 +56,33 @@ BufferAllocation::BufferAllocation(WMT::Device device, const WMTBufferInfo &info
   mappedMemory_ = info_.memory.get_accessible_or_null();
 };
 
-BufferAllocation::~BufferAllocation() {
+BufferAllocation::BufferAllocation(
+    WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags, WMT::Heap heap,
+    uint64_t heap_offset
+) :
+    info_(info),
+    flags_(flags) {
+  info_.length = info_.length;
+  suballocation_size_ = info_.length;
+  if (flags_.test(BufferAllocationFlag::SuballocateFromOnePage)) {
+    assert(0 && "heap-backed buffer doesn't support suballocation");
+  }
+  fenceTrackers.resize(suballocation_count_);
+  if (flags_.test(BufferAllocationFlag::CpuPlaced)) {
+    assert(0 && "heap doesn't support placed buffer");
+  }
+  obj_ = heap.newBuffer(info_, heap_offset);
+  gpuAddress_ = info_.gpu_address;
+  mappedMemory_ = info_.memory.get_accessible_or_null();
+}
+
+void
+BufferAllocation::free() {
   if (placed_buffer) {
     wsi::aligned_free(placed_buffer);
     placed_buffer = nullptr;
   }
+  delete this;
 }
 
 WMT::Texture
@@ -65,7 +105,7 @@ Buffer::view_(BufferViewKey key, BufferAllocation *allocation) {
   if (unlikely(allocation->version_ != version_)) {
     prepareAllocationViews(allocation);
   }
-  return *allocation->cached_view_[key];
+  return *allocation->cached_view_[key.index];
 };
 
 DXMT_RESOURCE_RESIDENCY_STATE &
@@ -78,7 +118,7 @@ Buffer::residency(BufferViewKey key, BufferAllocation *allocation) {
   if (unlikely(allocation->version_ != version_)) {
     prepareAllocationViews(allocation);
   }
-  return allocation->cached_view_[key]->residency;
+  return allocation->cached_view_[key.index]->residency;
 }
 
 void
@@ -126,12 +166,12 @@ Buffer::createView(BufferViewDescriptor const &descriptor) {
   unsigned i = 0;
   for (; i < version_; i++) {
     if (viewDescriptors_[i].format == descriptor.format) {
-      return i;
+      return BufferViewKey(i, std::nullopt);
     }
   }
   viewDescriptors_.push_back(descriptor);
   version_ = version_ + 1;
-  return i;
+  return BufferViewKey(i, std::nullopt);;
 }
 
 Rc<BufferAllocation>
@@ -151,6 +191,26 @@ Buffer::allocate(Flags<BufferAllocationFlag> flags) {
   info.length = length_;
   info.options = options;
   return new BufferAllocation(device_, info, flags);
+};
+
+Rc<BufferAllocation>
+Buffer::allocate(Flags<BufferAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset) {
+  WMTResourceOptions options = WMTResourceHazardTrackingModeUntracked;
+  if (flags.test(BufferAllocationFlag::CpuWriteCombined)) {
+    options |= WMTResourceOptionCPUCacheModeWriteCombined;
+  }
+  if (flags.test(BufferAllocationFlag::CpuInvisible)) {
+    options |= WMTResourceStorageModePrivate;
+  }
+  if (flags.test(BufferAllocationFlag::GpuManaged)) {
+    options |= WMTResourceStorageModeManaged;
+  }
+  WMTBufferInfo info;
+  info.memory.set(0);
+  info.length = length_;
+  info.options = options;
+  flags.set(BufferAllocationFlag::AllocatedOnHeap);
+  return new BufferAllocation(device_, info, flags, heap, heap_offset);
 };
 
 Rc<BufferAllocation>

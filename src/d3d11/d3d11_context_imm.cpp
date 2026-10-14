@@ -193,13 +193,15 @@ public:
       D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
-    if (unlikely(!pResource || !pMappedResource))
+    if (unlikely(!pResource))
       return E_INVALIDARG;
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     auto current_seq_id = cmd_queue.CurrentSeqId();
     auto coherent_seq_id = cmd_queue.CoherentSeqId();
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
+      if (!pMappedResource)
+        return E_INVALIDARG;
       switch (MapType) {
       case D3D11_MAP_READ:
       case D3D11_MAP_WRITE:
@@ -239,6 +241,8 @@ public:
       return S_OK;
     }
     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
+      if (!pMappedResource)
+        return E_INVALIDARG;
       switch (MapType) {
       case D3D11_MAP_READ:
       case D3D11_MAP_WRITE:
@@ -261,6 +265,8 @@ public:
       return S_OK;
     }
     if (auto dynamic = GetDynamicLinearTexture(pResource, &row_pitch, &depth_pitch)) {
+      if (!pMappedResource)
+        return E_INVALIDARG;
       switch (MapType) {
       case D3D11_MAP_READ:
       case D3D11_MAP_WRITE:
@@ -297,8 +303,11 @@ public:
       return S_OK;
     }
     if (auto staging = GetStagingResource(pResource, Subresource)) {
+      if (!pMappedResource)
+        return E_INVALIDARG;
+
       if (MapType > 3 || MapType == 0)
-          return E_INVALIDARG;
+        return E_INVALIDARG;
 
       if (ignore_map_flag_no_wait_)
         MapFlags &= ~D3D11_MAP_FLAG_DO_NOT_WAIT;
@@ -672,6 +681,7 @@ public:
   };
 
   HRESULT STDMETHODCALLTYPE Signal(ID3D11Fence *pFence, UINT64 Value) override {
+    std::lock_guard<d3d11_device_mutex> lock(mutex);
     auto fence = static_cast<MTLD3D11Fence *>(pFence);
 
     InvalidateCurrentPass();
@@ -684,6 +694,7 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE Wait(ID3D11Fence *pFence, UINT64 Value) override {
+    std::lock_guard<d3d11_device_mutex> lock(mutex);
     auto fence = static_cast<MTLD3D11Fence *>(pFence);
 
     Flush();
@@ -698,6 +709,41 @@ public:
   STDMETHODCALLTYPE
   GetContextFlags() override {
     return 0;
+  }
+
+  HRESULT
+  AcquireSync(ID3D11Resource *pResource, UINT64 Key, DWORD dwMilliseconds) override {
+    std::lock_guard<d3d11_device_mutex> lock(mutex);
+    auto resource = GetResourceCommon(pResource);
+    if (!resource->keyedMutex())
+      return DXGI_ERROR_INVALID_CALL;
+    return resource->keyedMutex()->acquire(
+        [&](uint64_t fence) {
+          InvalidateCurrentPass(true);
+          EmitOP([event = resource->keyedMutex()->sharedEvent(), fence](ArgumentEncodingContext &enc) mutable {
+            enc.waitEvent(std::move(event), fence);
+          });
+          Flush();
+        },
+        Key, dwMilliseconds
+    );
+  }
+  HRESULT
+  ReleaseSync(ID3D11Resource *pResource, UINT64 Key) override {
+    std::lock_guard<d3d11_device_mutex> lock(mutex);
+    auto resource = GetResourceCommon(pResource);
+    if (!resource->keyedMutex())
+      return DXGI_ERROR_INVALID_CALL;
+    return resource->keyedMutex()->release(
+        [&](uint64_t fence) {
+          InvalidateCurrentPass(true);
+          EmitOP([event = resource->keyedMutex()->sharedEvent(), fence](ArgumentEncodingContext &enc) mutable {
+            enc.signalEvent(std::move(event), fence);
+          });
+          Flush();
+        },
+        Key
+    );
   }
 
 private:

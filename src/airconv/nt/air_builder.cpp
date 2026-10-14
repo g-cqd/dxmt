@@ -276,9 +276,9 @@ AIRBuilder::CreateAtomicCmpXchg(
 }
 
 Type *
-AIRBuilder::getTextureHandleType(const Texture &Texture) {
-  assert(Texture.kind <= Texture::last_resource_kind);
-  return getOrCreateStructType(std::format("struct._{}_t", TextureInfo[Texture.kind].air_symbol_suffix))
+AIRBuilder::getTextureHandleType(Texture::ResourceKind Kind) {
+  assert(Kind <= Texture::last_resource_kind);
+  return getOrCreateStructType(std::format("struct._{}_t", TextureInfo[Kind].air_symbol_suffix))
       ->getPointerTo(1);
 };
 
@@ -973,7 +973,7 @@ AIRBuilder::CreateTextureQuery(const Texture &Texture, Value *Handle, Texture::Q
 
   auto Fn = getModule()->getOrInsertFunction(FnName, FunctionType::get(getIntTy(), Tys, false), Attrs);
 
-  return builder.CreateCall(Fn, Ops);
+  return builder.CreateSelect(builder.CreateIsNull(Handle), builder.getInt32(0), builder.CreateCall(Fn, Ops));
 }
 
 std::pair<Value *, Value *>
@@ -1483,7 +1483,7 @@ AIRBuilder::CreateInterpolateAtOffset(Value *Interpoant, Value *Offset, bool Per
 
   auto Fn = getModule()->getOrInsertFunction(
       Perspective ? "air.interpolate_offset_perspective.v4f32" : "air.interpolate_offset_no_perspective.v4f32",
-      FunctionType::get(getFloatTy(4), {Interpoant->getType(), getIntTy(2)}, false), Attrs
+      FunctionType::get(getFloatTy(4), {Interpoant->getType(), getFloatTy(2)}, false), Attrs
   );
 
   return builder.CreateCall(Fn, {Interpoant, Offset});
@@ -1780,6 +1780,7 @@ AIRBuilder::CreateIntBinOp(IntBinOp Op, Value *LHS, Value *RHS, bool Signed) {
   static char const *FnNames[] = {
       "max",
       "min",
+      "mul_hi",
   };
 
   if (uint32_t(Op) >= std::size(FnNames)) {

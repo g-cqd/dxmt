@@ -1,3 +1,22 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ * Copyright 2026 Marc-Aurel Zent for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_enumerable.hpp"
@@ -118,12 +137,22 @@ public:
       }
 
   DeviceTexture(
-      const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, D3DKMT_HANDLE localHandle, D3DKMT_HANDLE globalHandle,
+      const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, Rc<KeyedMutex> &&keyed_mutex,
       MTLD3D11Device *pDevice
+  ) :
+      TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice) {
+        this->texture_ = std::move(u_texture);
+        this->keyed_mutex_ = std::move(keyed_mutex);
+      }
+
+  DeviceTexture(
+      const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, D3DKMT_HANDLE localHandle, D3DKMT_HANDLE globalHandle,
+      Rc<KeyedMutex> && keyed_mutex, MTLD3D11Device *pDevice
   ) :
       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice),
       local_kmt_(localHandle), global_kmt_(globalHandle) {
         this->texture_ = std::move(u_texture);
+        this->keyed_mutex_ = std::move(keyed_mutex);
       }
 
   ~DeviceTexture() {
@@ -322,6 +351,7 @@ struct SharedResourceData {
     D3D11_TEXTURE2D_DESC1 desc2d;
     D3D11_TEXTURE3D_DESC1 desc3d;
   } desc;
+  D3DKMT_HANDLE mutex_handle;
 };
 
 template <typename tag>
@@ -338,6 +368,9 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
                             !(finalDesc.MiscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE);
   auto texture = Rc<Texture>(new Texture(info, pDevice->GetMTLDevice()));
 
+  MTL_DXGI_FORMAT_DESC format_desc;
+  MTLQueryDXGIFormat(pDevice->GetMTLDevice(), finalDesc.Format, format_desc);
+
   auto &initializer = pDevice->GetDXMTDevice().queue().initializer;
 
   auto initialize = [&](Rc<TextureAllocation> &&allocation) {
@@ -351,7 +384,7 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
         auto &data = pInitialData[sub.SubresourceId];
         initializer.initWithData(
             texture.ptr(), texture->current(), sub.ArraySlice, sub.MipLevel, data.pSysMem, data.SysMemPitch,
-            data.SysMemSlicePitch
+            data.SysMemSlicePitch, format_desc.Flag
         );
       }
     }
@@ -389,6 +422,12 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
     runtimeData.dimension = tag::dimension;
     memcpy(&runtimeData.desc, pDesc, sizeof(typename tag::DESC1));
 
+    Rc<KeyedMutex> keyed_mutex = {};
+    if (finalDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) {
+      keyed_mutex = KeyedMutex::create(pDevice->GetMTLDevice());
+    }
+    runtimeData.mutex_handle = keyed_mutex ? keyed_mutex->globalHandle() : 0;
+
     D3DKMT_CREATEALLOCATION create = {};
     create.hDevice = pDevice->GetLocalD3DKMT();
     create.pPrivateRuntimeData = &runtimeData;
@@ -411,12 +450,10 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
       return E_FAIL;
     }
 
-    // TODO: handle keyed mutex
-
     initialize(std::move(allocation));
     *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
         ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), create.hResource,
-                                   create.hGlobalShare, pDevice))
+                                   create.hGlobalShare, std::move(keyed_mutex), pDevice))
     );
     return S_OK;
   }
@@ -470,8 +507,8 @@ CreateDeviceTexture3D(MTLD3D11Device *pDevice,
 template <typename tag>
 HRESULT
 ImportSharedTextureInternal(
-    MTLD3D11Device *pDevice, const typename tag::DESC1 *pDescUnchecked, mach_port_t MachPort, REFIID riid,
-    void **ppTexture
+    MTLD3D11Device *pDevice, const typename tag::DESC1 *pDescUnchecked, mach_port_t MachPort, 
+    D3DKMT_HANDLE hSharedKeyedMutex, REFIID riid, void **ppTexture
 ) {
   WMTTextureInfo info;
   typename tag::DESC1 finalDesc;
@@ -484,7 +521,11 @@ ImportSharedTextureInternal(
     return E_FAIL;
   texture->rename(std::move(allocation));
 
-  Com<DeviceTexture<tag>> device_texture = (ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), pDevice)));
+  Rc<KeyedMutex> keyed_mutex;
+  if (hSharedKeyedMutex & 0xc0000000)
+    keyed_mutex = KeyedMutex::import(pDevice->GetMTLDevice(), hSharedKeyedMutex);
+
+  Com<DeviceTexture<tag>> device_texture = (ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), std::move(keyed_mutex), pDevice)));
   return device_texture->QueryInterface(riid, ppTexture);
 }
 
@@ -547,15 +588,15 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   {
   case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
     return ImportSharedTextureInternal<tag_texture_1d>(
-        pDevice, &runtimeData.desc.desc1d, mach_port, riid, ppTexture
+        pDevice, &runtimeData.desc.desc1d, mach_port, runtimeData.mutex_handle, riid, ppTexture
     );
   case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
     return ImportSharedTextureInternal<tag_texture_2d>(
-        pDevice, &runtimeData.desc.desc2d, mach_port, riid, ppTexture
+        pDevice, &runtimeData.desc.desc2d, mach_port, runtimeData.mutex_handle, riid, ppTexture
     );
   case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
     return ImportSharedTextureInternal<tag_texture_3d>(
-        pDevice, &runtimeData.desc.desc3d, mach_port, riid, ppTexture
+        pDevice, &runtimeData.desc.desc3d, mach_port, runtimeData.mutex_handle, riid, ppTexture
     );
   default:
     ERR("ImportSharedTexture: Unsupported resource dimension");
@@ -639,15 +680,15 @@ ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFII
   {
   case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
     return ImportSharedTextureInternal<tag_texture_1d>(
-        pDevice, &runtimeData.desc.desc1d, mach_port, riid, ppTexture
+        pDevice, &runtimeData.desc.desc1d, mach_port, runtimeData.mutex_handle, riid, ppTexture
     );
   case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
     return ImportSharedTextureInternal<tag_texture_2d>(
-        pDevice, &runtimeData.desc.desc2d, mach_port, riid, ppTexture
+        pDevice, &runtimeData.desc.desc2d, mach_port, runtimeData.mutex_handle, riid, ppTexture
     );
   case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
     return ImportSharedTextureInternal<tag_texture_3d>(
-        pDevice, &runtimeData.desc.desc3d, mach_port, riid, ppTexture
+        pDevice, &runtimeData.desc.desc3d, mach_port, runtimeData.mutex_handle, riid, ppTexture
     );
   default:
     ERR("ImportSharedTexture: Unsupported resource dimension");

@@ -94,176 +94,6 @@ uint32_t next_pow2(uint32_t x) {
   return x == 1 ? 1 : 1 << (32 - __builtin_clz(x - 1));
 }
 
-auto get_item_in_argbuf_binding_table(uint32_t argbuf_index, uint32_t index) {
-  return make_irvalue([=](context ctx) {
-    auto argbuf = ctx.function->getArg(argbuf_index);
-    auto argbuf_struct_type = llvm::cast<llvm::StructType>(
-      llvm::cast<llvm::PointerType>(argbuf->getType())
-        ->getNonOpaquePointerElementType()
-    );
-    return ctx.builder.CreateLoad(
-      argbuf_struct_type->getElementType(index),
-      ctx.builder.CreateStructGEP(
-        llvm::cast<llvm::PointerType>(argbuf->getType())
-          ->getNonOpaquePointerElementType(),
-        argbuf, index
-      )
-    );
-  });
-};
-
-void setup_binding_table(
-  const ShaderInfo *shader_info, io_binding_map &resource_map,
-  air::FunctionSignatureBuilder &func_signature, llvm::Module &module,
-  uint32_t argbuffer_constant_slot, uint32_t argbuffer_slot
-) {
-  uint32_t binding_table_index = ~0u;
-  uint32_t cbuf_table_index = ~0u;
-  if (!shader_info->binding_table.Empty()) {
-    auto [type, metadata] = shader_info->binding_table.Build(
-      module.getContext(), module.getDataLayout()
-    );
-    std::string arg_name = "binding_table";
-    if (argbuffer_slot != kArgumentBufferBindIndex)
-      arg_name += std::to_string(argbuffer_slot);
-    binding_table_index =
-      func_signature.DefineInput(air::ArgumentBindingIndirectBuffer{
-        .location_index = argbuffer_slot, // kArgumentBufferBindIndex
-        .array_size = 1,
-        .memory_access = air::MemoryAccess::read,
-        .address_space = air::AddressSpace::constant,
-        .struct_type = type,
-        .struct_type_info = metadata,
-        .arg_name = arg_name,
-      });
-  }
-  if (!shader_info->binding_table_cbuffer.Empty()) {
-    auto [type, metadata] = shader_info->binding_table_cbuffer.Build(
-      module.getContext(), module.getDataLayout()
-    );
-    std::string arg_name = "cbuffer_table";
-    if (argbuffer_constant_slot != kConstantBufferBindIndex)
-      arg_name += std::to_string(argbuffer_constant_slot);
-    cbuf_table_index =
-      func_signature.DefineInput(air::ArgumentBindingIndirectBuffer{
-        .location_index = argbuffer_constant_slot, // kConstantBufferBindIndex
-        .array_size = 1,
-        .memory_access = air::MemoryAccess::read,
-        .address_space = air::AddressSpace::constant,
-        .struct_type = type,
-        .struct_type_info = metadata,
-        .arg_name = arg_name,
-      });
-  }
-
-  for (auto &[range_id, cbv] : shader_info->cbufferMap) {
-    // TODO: abstract SM 5.0 binding
-    auto index = cbv.arg_index;
-    resource_map.cb_range_map[range_id] = [=](pvalue) {
-      // ignore index in SM 5.0
-      return get_item_in_argbuf_binding_table(cbuf_table_index, index);
-    };
-  }
-  for (auto &[range_id, sampler] : shader_info->samplerMap) {
-    // TODO: abstract SM 5.0 binding
-    resource_map.sampler_range_map[range_id] = {
-      [=, index = sampler.arg_index](pvalue) {
-        // ignore index in SM 5.0
-        return get_item_in_argbuf_binding_table(binding_table_index, index);
-      },
-      [=, index = sampler.arg_cube_index](pvalue) {
-        // ignore index in SM 5.0
-        return get_item_in_argbuf_binding_table(binding_table_index, index);
-      },
-      [=, index = sampler.arg_metadata_index](pvalue) {
-        // ignore index in SM 5.0
-        return get_item_in_argbuf_binding_table(binding_table_index, index);
-      }
-    };
-  }
-  for (auto &[range_id, srv] : shader_info->srvMap) {
-    if (srv.resource_type != shader::common::ResourceType::NonApplicable) {
-      // TODO: abstract SM 5.0 binding
-      auto access =
-        srv.sampled ? air::MemoryAccess::sample : air::MemoryAccess::read;
-      auto texture_kind_logical = air::to_air_resource_type(srv.resource_type, srv.compared);
-      auto scaler_type = air::to_air_scaler_type(srv.scaler_type);
-      resource_map.srv_range_map[range_id] = {
-        air::MSLTexture{
-          .component_type = scaler_type,
-          .memory_access = access,
-          .resource_kind = air::lowering_texture_1d_to_2d(texture_kind_logical),
-          .resource_kind_logical = texture_kind_logical,
-        },
-        [=, index = srv.arg_index](pvalue) {
-          // ignore index in SM 5.0
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        [=, index = srv.arg_metadata_index](pvalue) {
-          // ignore index in SM 5.0
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        false
-      };
-    } else {
-      resource_map.srv_buf_range_map[range_id] = {
-        srv.structure_stride,
-        [=, index = srv.arg_index](pvalue) {
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        [=, index = srv.arg_metadata_index](pvalue) {
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        false
-      };
-    }
-  }
-  for (auto &[range_id, uav] : shader_info->uavMap) {
-    auto access = uav.written ? (uav.read ? air::MemoryAccess::read_write
-                                          : air::MemoryAccess::write)
-                              : air::MemoryAccess::read;
-    if (uav.resource_type != shader::common::ResourceType::NonApplicable) {
-      auto texture_kind_logical = air::to_air_resource_type(uav.resource_type);
-      auto scaler_type = air::to_air_scaler_type(uav.scaler_type);
-      resource_map.uav_range_map[range_id] = {
-        air::MSLTexture{
-          .component_type = scaler_type,
-          .memory_access = access,
-          .resource_kind = air::lowering_texture_1d_to_2d(texture_kind_logical),
-          .resource_kind_logical = texture_kind_logical,
-        },
-        [=, index = uav.arg_index](pvalue) {
-          // ignore index in SM 5.0
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        [=, index = uav.arg_metadata_index](pvalue) {
-          // ignore index in SM 5.0
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        uav.global_coherent
-      };
-    } else {
-      resource_map.uav_buf_range_map[range_id] = {
-        uav.structure_stride,
-        [=, index = uav.arg_index](pvalue) {
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        [=, index = uav.arg_metadata_index](pvalue) {
-          return get_item_in_argbuf_binding_table(binding_table_index, index);
-        },
-        uav.global_coherent
-      };
-      if (uav.with_counter) {
-        auto argbuf_index_counterptr = uav.arg_counter_index;
-        resource_map.uav_counter_range_map[range_id] = [=](pvalue) {
-          return get_item_in_argbuf_binding_table(
-            binding_table_index, argbuf_index_counterptr
-          );
-        };
-      }
-    }
-  }
-};
 
 void setup_immediate_constant_buffer(
   const ShaderInfo *shader_info, io_binding_map &resource_map,
@@ -404,6 +234,87 @@ void setup_metal_version(llvm::Module &module, SM50_SHADER_METAL_VERSION metal_v
   }
 }
 
+RegisterComponentType
+component_type_from_pixel_format(air::MTLPixelFormat format) {
+  switch (format) {
+  case air::MTLPixelFormat::R8Sint:
+  case air::MTLPixelFormat::R16Sint:
+  case air::MTLPixelFormat::RG8Sint:
+  case air::MTLPixelFormat::R32Sint:
+  case air::MTLPixelFormat::RG16Sint:
+  case air::MTLPixelFormat::RGBA8Sint:
+  case air::MTLPixelFormat::RG32Sint:
+  case air::MTLPixelFormat::RGBA16Sint:
+  case air::MTLPixelFormat::RGBA32Sint:
+    return RegisterComponentType::Int;
+  case air::MTLPixelFormat::R8Uint:
+  case air::MTLPixelFormat::R16Uint:
+  case air::MTLPixelFormat::RG8Uint:
+  case air::MTLPixelFormat::R32Uint:
+  case air::MTLPixelFormat::RG16Uint:
+  case air::MTLPixelFormat::RGBA8Uint:
+  case air::MTLPixelFormat::RGB10A2Uint:
+  case air::MTLPixelFormat::RG32Uint:
+  case air::MTLPixelFormat::RGBA16Uint:
+  case air::MTLPixelFormat::RGBA32Uint:
+    return RegisterComponentType::Uint;
+  case air::MTLPixelFormat::A8Unorm:
+  case air::MTLPixelFormat::R8Unorm:
+  case air::MTLPixelFormat::R8Unorm_sRGB:
+  case air::MTLPixelFormat::R8Snorm:
+  case air::MTLPixelFormat::R16Unorm:
+  case air::MTLPixelFormat::R16Snorm:
+  case air::MTLPixelFormat::R16Float:
+  case air::MTLPixelFormat::RG8Unorm:
+  case air::MTLPixelFormat::RG8Unorm_sRGB:
+  case air::MTLPixelFormat::RG8Snorm:
+  case air::MTLPixelFormat::B5G6R5Unorm:
+  case air::MTLPixelFormat::A1BGR5Unorm:
+  case air::MTLPixelFormat::ABGR4Unorm:
+  case air::MTLPixelFormat::BGR5A1Unorm:
+  case air::MTLPixelFormat::R32Float:
+  case air::MTLPixelFormat::RG16Unorm:
+  case air::MTLPixelFormat::RG16Snorm:
+  case air::MTLPixelFormat::RG16Float:
+  case air::MTLPixelFormat::RGBA8Unorm:
+  case air::MTLPixelFormat::RGBA8Unorm_sRGB:
+  case air::MTLPixelFormat::RGBA8Snorm:
+  case air::MTLPixelFormat::BGRA8Unorm:
+  case air::MTLPixelFormat::BGRA8Unorm_sRGB:
+  case air::MTLPixelFormat::RGB10A2Unorm:
+  case air::MTLPixelFormat::RG11B10Float:
+  case air::MTLPixelFormat::RGB9E5Float:
+  case air::MTLPixelFormat::BGR10A2Unorm:
+  case air::MTLPixelFormat::BGR10_XR:
+  case air::MTLPixelFormat::BGR10_XR_sRGB:
+  case air::MTLPixelFormat::RG32Float:
+  case air::MTLPixelFormat::RGBA16Unorm:
+  case air::MTLPixelFormat::RGBA16Snorm:
+  case air::MTLPixelFormat::RGBA16Float:
+  case air::MTLPixelFormat::BGRA10_XR:
+  case air::MTLPixelFormat::BGRA10_XR_sRGB:
+  case air::MTLPixelFormat::RGBA32Float:
+  case air::MTLPixelFormat::BC1_RGBA:
+  case air::MTLPixelFormat::BC1_RGBA_sRGB:
+  case air::MTLPixelFormat::BC2_RGBA:
+  case air::MTLPixelFormat::BC2_RGBA_sRGB:
+  case air::MTLPixelFormat::BC3_RGBA:
+  case air::MTLPixelFormat::BC3_RGBA_sRGB:
+  case air::MTLPixelFormat::BC4_RUnorm:
+  case air::MTLPixelFormat::BC4_RSnorm:
+  case air::MTLPixelFormat::BC5_RGUnorm:
+  case air::MTLPixelFormat::BC5_RGSnorm:
+  case air::MTLPixelFormat::BC6H_RGBFloat:
+  case air::MTLPixelFormat::BC6H_RGBUfloat:
+  case air::MTLPixelFormat::BC7_RGBAUnorm:
+  case air::MTLPixelFormat::BC7_RGBAUnorm_sRGB:
+    return RegisterComponentType::Float;
+  default:
+    break;
+  }
+  return RegisterComponentType::Unknown;
+}
+
 llvm::Error convert_dxbc_pixel_shader(
   SM50ShaderInternal *pShaderInternal, const char *name,
   llvm::LLVMContext &context, llvm::Module &module,
@@ -420,12 +331,14 @@ llvm::Error convert_dxbc_pixel_shader(
   bool pso_dual_source_blending = false;
   bool pso_disable_depth_output = false;
   uint32_t pso_unorm_output_reg_mask = 0;
+  uint32_t *pso_pixel_formats = nullptr;
   SM50_SHADER_PSO_PIXEL_SHADER_DATA *pso_data = nullptr;
   if (args_get_data<SM50_SHADER_PSO_PIXEL_SHADER, SM50_SHADER_PSO_PIXEL_SHADER_DATA>(pArgs, &pso_data)) {
     pso_dual_source_blending = pso_data->dual_source_blending;
     pso_disable_depth_output = pso_data->disable_depth_output;
     pso_unorm_output_reg_mask = pso_data->unorm_output_reg_mask;
     pso_sample_mask = pso_data->sample_mask;
+    pso_pixel_formats = pso_data->pixel_formats;
   }
   SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
   SM50_SHADER_FLAG shader_flags = {};
@@ -434,6 +347,8 @@ llvm::Error convert_dxbc_pixel_shader(
     metal_version = sm50_common->metal_version;
     shader_flags = sm50_common->flags;
   }
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
   IREffect prologue([](auto) { return std::monostate(); });
   IRValue epilogue([](struct context ctx) -> pvalue {
@@ -453,6 +368,8 @@ llvm::Error convert_dxbc_pixel_shader(
     sig_ctx.disable_depth_output = pso_disable_depth_output;
     sig_ctx.pull_mode_reg_mask = shader_info->pull_mode_reg_mask;
     sig_ctx.unorm_output_reg_mask = pso_unorm_output_reg_mask;
+    if (pso_pixel_formats)
+      memcpy(sig_ctx.pixel_formats, pso_pixel_formats, sizeof(sig_ctx.pixel_formats));
     for (auto &p : pShaderInternal->signature_handlers) {
       p(sig_ctx);
     }
@@ -472,7 +389,11 @@ llvm::Error convert_dxbc_pixel_shader(
     };
   }
 
-  setup_binding_table(shader_info, resource_map, func_signature, module);
+  auto binding_map = rootsig ? setup_binding_rootsig(
+                                   shader_info, func_signature, module, D3D10_SB_PIXEL_SHADER, rootsig->bytecode,
+                                   rootsig->bytecode_length
+                               )
+                             : setup_binding_table2(shader_info, func_signature, module);
 
   auto [function, function_metadata] =
     func_signature.CreateFunction(name, context, module, 0, false);
@@ -512,12 +433,18 @@ llvm::Error convert_dxbc_pixel_shader(
     shader_info, resource_map, types, module, builder
   );
 
-  struct context ctx {
-    .builder = builder, .air = air, .llvm = context, .module = module, .function = function,
-    .resource = resource_map, .types = types,
-    .pso_sample_mask = pso_sample_mask,
-    .shader_type = pShaderInternal->shader_type,
-    .metal_version = metal_version,
+  struct context ctx{
+      .builder = builder,
+      .air = air,
+      .binding = *binding_map,
+      .llvm = context,
+      .module = module,
+      .function = function,
+      .resource = resource_map,
+      .types = types,
+      .pso_sample_mask = pso_sample_mask,
+      .shader_type = pShaderInternal->shader_type,
+      .metal_version = metal_version,
   };
 
   if (auto err = prologue.build(ctx).takeError()) {
@@ -564,6 +491,8 @@ llvm::Error convert_dxbc_compute_shader(
     metal_version = sm50_common->metal_version;
     shader_flags = sm50_common->flags;
   }
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
   IREffect prologue([](auto) { return std::monostate(); });
   IRValue epilogue([](struct context ctx) -> pvalue {
@@ -584,7 +513,11 @@ llvm::Error convert_dxbc_compute_shader(
     }
   }
 
-  setup_binding_table(shader_info, resource_map, func_signature, module);
+  auto binding_map = rootsig ? setup_binding_rootsig(
+                                   shader_info, func_signature, module, D3D11_SB_COMPUTE_SHADER, rootsig->bytecode,
+                                   rootsig->bytecode_length
+                               )
+                             : setup_binding_table2(shader_info, func_signature, module);
   setup_tgsm(shader_info, resource_map, types, module);
 
   auto [function, function_metadata] =
@@ -608,11 +541,18 @@ llvm::Error convert_dxbc_compute_shader(
     shader_info, resource_map, types, module, builder
   );
 
-  struct context ctx {
-    .builder = builder, .air = air, .llvm = context, .module = module, .function = function,
-    .resource = resource_map, .types = types, .pso_sample_mask = 0xffffffff,
-    .shader_type = pShaderInternal->shader_type,
-    .metal_version = metal_version,
+  struct context ctx{
+      .builder = builder,
+      .air = air,
+      .binding = *binding_map,
+      .llvm = context,
+      .module = module,
+      .function = function,
+      .resource = resource_map,
+      .types = types,
+      .pso_sample_mask = 0xffffffff,
+      .shader_type = pShaderInternal->shader_type,
+      .metal_version = metal_version,
   };
 
   if (auto err = prologue.build(ctx).takeError()) {
@@ -666,6 +606,8 @@ llvm::Error convert_dxbc_vertex_shader(
     metal_version = sm50_common->metal_version;
     shader_flags = sm50_common->flags;
   }
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
   IREffect prologue([](auto) { return std::monostate(); });
   IRValue epilogue([](struct context ctx) -> pvalue {
@@ -698,21 +640,27 @@ llvm::Error convert_dxbc_vertex_shader(
   if (vertex_so) {
     auto bv = func_signature.DefineInput(air::InputBaseVertex{});
     auto vid = func_signature.DefineInput(air::InputVertexID{});
-    auto slot_0 = func_signature.DefineInput(air::ArgumentBindingBuffer{
+    auto so_table = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
-      .location_index = 20,
+      .location_index = SM50_BINDING_INDEX_STREAM_OUTPUT0,
       .array_size = 0,
-      .memory_access = air::MemoryAccess::write,
-      .address_space = air::AddressSpace::device,
+      .memory_access = air::MemoryAccess::read,
+      .address_space = air::AddressSpace::constant,
       .type = air::MSLUint{},
-      .arg_name = "so_slot0",
+      .arg_name = "stream_outputs",
       .raster_order_group = {}
     });
     epilogue << make_irvalue([=](struct context ctx) {
       auto &builder = ctx.builder;
       auto base_vertex = ctx.function->getArg(bv);
       auto vertex_id = ctx.function->getArg(vid);
-      auto slot0 = ctx.function->getArg(slot_0);
+      auto so_entries_type = ctx.types._dxmt_stream_output_buffer_entry;
+      auto so_entries = builder.CreateBitCast(
+          ctx.function->getArg(so_table), so_entries_type->getPointerTo((uint32_t)air::AddressSpace::constant)
+      );
+      auto slot0_entry =
+          builder.CreateLoad(so_entries_type, builder.CreateConstInBoundsGEP1_32(so_entries_type, so_entries, 0));
+      auto slot0 = builder.CreateExtractValue(slot0_entry, {0});
       auto adjusted_vertex_id = builder.CreateSub(vertex_id, base_vertex);
       auto output_regs = builder.CreateBitOrPointerCast(
         ctx.resource.output.ptr_int4, llvm::PointerType::get(ctx.types._int, 0)
@@ -728,7 +676,7 @@ llvm::Error convert_dxbc_vertex_shader(
         auto target_offset = ctx.builder.CreateAdd(
           ctx.builder.CreateMul(
             adjusted_vertex_id,
-            ctx.builder.getInt32(vertex_so->strides[element.output_slot])
+            ctx.builder.getInt32(vertex_so->strides[element.output_slot /* expected to be 0 */])
           ),
           ctx.builder.getInt32(element.offset)
         );
@@ -756,7 +704,11 @@ llvm::Error convert_dxbc_vertex_shader(
     );
   };
 
-  setup_binding_table(shader_info, resource_map, func_signature, module);
+  auto binding_map = rootsig ? setup_binding_rootsig(
+                                   shader_info, func_signature, module, D3D10_SB_VERTEX_SHADER, rootsig->bytecode,
+                                   rootsig->bytecode_length
+                               )
+                             : setup_binding_table2(shader_info, func_signature, module);
 
   uint32_t rta_idx_out = ~0u;
   if (gs_passthrough && gs_passthrough->Data.RenderTargetArrayIndexReg != 255) {
@@ -819,11 +771,18 @@ llvm::Error convert_dxbc_vertex_shader(
     shader_info, resource_map, types, module, builder
   );
 
-  struct context ctx {
-    .builder = builder, .air = air, .llvm = context, .module = module, .function = function,
-    .resource = resource_map, .types = types, .pso_sample_mask = 0xffffffff,
-    .shader_type = pShaderInternal->shader_type,
-    .metal_version = metal_version,
+  struct context ctx{
+      .builder = builder,
+      .air = air,
+      .binding = *binding_map,
+      .llvm = context,
+      .module = module,
+      .function = function,
+      .resource = resource_map,
+      .types = types,
+      .pso_sample_mask = 0xffffffff,
+      .shader_type = pShaderInternal->shader_type,
+      .metal_version = metal_version,
   };
 
   if (auto err = prologue.build(ctx).takeError()) {
@@ -1336,19 +1295,17 @@ AIRCONV_API int SM50Initialize(
       pRefl->PostTessellator = {.MaxPotentialTessFactor = max_potential_tess_factor};
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_GEOMETRY_SHADER) {
-      if (binding_cbuffer_mask || binding_sampler_mask || binding_uav_mask ||
-          binding_srv_hi_mask || binding_srv_lo_mask ||
-          !CheckGSBBIsPassThrough(sm50_shader->entry())) {
+      if (binding_cbuffer_mask || binding_sampler_mask || binding_uav_mask || binding_srv_hi_mask ||
+          binding_srv_lo_mask ||
+          !(CheckGSBBIsPassThrough(sm50_shader->entry()) &&
+            CheckGSSignatureIsPassThrough(inputParser, outputParser, pRefl->GeometryShader.Data))) {
         pRefl->GeometryShader.GSPassThrough = ~0u;
-      } else {
-        CheckGSSignatureIsPassThrough(
-          inputParser, outputParser, pRefl->GeometryShader.Data
-        );
       }
       pRefl->GeometryShader.Primitive = sm50_shader->gs_input_primitive;
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
-      pRefl->PSValidRenderTargets = sm50_shader->pso_valid_output_reg_mask;
+      pRefl->PixelShader.ValidRenderTargets = sm50_shader->pso_valid_output_reg_mask;
+      pRefl->PixelShader.HasCoverageOutput = sm50_shader->ps_has_coverage_output;
     }
     pRefl->NumOutputElement = sm50_shader->max_output_register;
     pRefl->ArgumentTableQwords = binding_table.Size();

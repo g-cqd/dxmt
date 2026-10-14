@@ -209,6 +209,10 @@ convert_dxbc_vertex_hull_shader(
   }
   SM50_SHADER_IA_INPUT_LAYOUT_DATA *ia_layout = nullptr;
   args_get_data<SM50_SHADER_IA_INPUT_LAYOUT, SM50_SHADER_IA_INPUT_LAYOUT_DATA>(pArgs, &ia_layout);
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig_vs = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE2, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig_vs);
 
   bool is_indexed_draw = ia_layout && ia_layout->index_buffer_format > 0;
 
@@ -242,8 +246,19 @@ convert_dxbc_vertex_hull_shader(
     }
   }
 
-  setup_binding_table(&vertex_shader_info, resource_map_vs, func_signature, module, 27, 28);
-  setup_binding_table(&hull_shader_info, resource_map_hs, func_signature, module);
+  auto binding_map = rootsig_vs ? setup_binding_rootsig(
+                                   &vertex_shader_info, func_signature, module, D3D10_SB_VERTEX_SHADER,
+                                   rootsig_vs->bytecode, rootsig_vs->bytecode_length
+                               )
+                             : setup_binding_table2(
+                                   &vertex_shader_info, func_signature, module, SM50_BINDING_INDEX_CONSTANT_BUFFER2,
+                                   SM50_BINDING_INDEX_ARGUMENT_TABLE2
+                               );
+  auto binding_map_hs = rootsig ? setup_binding_rootsig(
+                                      &hull_shader_info, func_signature, module, D3D11_SB_HULL_SHADER,
+                                      rootsig->bytecode, rootsig->bytecode_length
+                                  )
+                                : setup_binding_table2(&hull_shader_info, func_signature, module);
 
   uint32_t threads_per_patch = next_pow2(pHullStage->hull_maximum_threads_per_patch);
   uint32_t patch_per_group = next_pow2(32 / threads_per_patch);
@@ -284,7 +299,7 @@ convert_dxbc_vertex_hull_shader(
   func_signature.DefineInput(air::InputMeshGridProperties{});
   uint32_t draw_argument_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
       .buffer_size = {},
-      .location_index = 21,
+      .location_index = SM50_BINDING_INDEX_DRAW_ARGUMENTS,
       .array_size = 0,
       .memory_access = air::MemoryAccess::read,
       .address_space = air::AddressSpace::constant,
@@ -299,7 +314,7 @@ convert_dxbc_vertex_hull_shader(
   if (is_indexed_draw) {
     index_buffer_idx = func_signature.DefineInput(air::ArgumentBindingBuffer{
         .buffer_size = {},
-        .location_index = 20,
+        .location_index = SM50_BINDING_INDEX_INDEX_BUFFER,
         .array_size = 0,
         .memory_access = air::MemoryAccess::read,
         .address_space = air::AddressSpace::device,
@@ -406,6 +421,7 @@ convert_dxbc_vertex_hull_shader(
     struct context ctx {
         .builder = builder,
         .air = air,
+        .binding = *binding_map,
         .llvm = context,
         .module = module,
         .function = function,
@@ -541,7 +557,7 @@ convert_dxbc_vertex_hull_shader(
       resource_map.output_element_count = max_hs_output_register;
     } else {
       /* since no control point phase */
-      if (vertex_max_output_register != max_hs_output_register) {
+      if (vertex_max_output_register < max_hs_output_register) {
         return llvm::make_error<UnsupportedFeature>(
             "Hull shader has control point phase pass-through, but vertex shader "
             "output signature doesn't match hull shader input signature."
@@ -581,6 +597,7 @@ convert_dxbc_vertex_hull_shader(
     struct context ctx {
         .builder = builder,
         .air = air,
+        .binding = *binding_map_hs,
         .llvm = context,
         .module = module,
         .function = function,
@@ -734,6 +751,8 @@ convert_dxbc_tesselator_domain_shader(
     metal_version = sm50_common->metal_version;
     shader_flags = sm50_common->flags;
   }
+  SM50_SHADER_ROOT_SIGNATURE_DATA *rootsig = nullptr;
+  args_get_data<SM50_SHADER_ROOT_SIGNATURE, SM50_SHADER_ROOT_SIGNATURE_DATA>(pArgs, &rootsig);
 
   auto [final_maxtessfactor, factor_int] = get_final_maxtessfactor(pHullStage, pArgs);
 
@@ -756,7 +775,11 @@ convert_dxbc_tesselator_domain_shader(
 
   auto &ds_output_handlers = pShaderInternal->mesh_output_handlers;
 
-  setup_binding_table(shader_info, resource_map, func_signature, module);
+  auto binding_map = rootsig ? setup_binding_rootsig(
+                                   shader_info, func_signature, module, D3D11_SB_DOMAIN_SHADER, rootsig->bytecode,
+                                   rootsig->bytecode_length
+                               )
+                             : setup_binding_table2(shader_info, func_signature, module);
 
   uint32_t rta_idx_out = ~0u;
   if (gs_passthrough && gs_passthrough->Data.RenderTargetArrayIndexReg != 255) {
@@ -871,6 +894,7 @@ convert_dxbc_tesselator_domain_shader(
   struct context ctx {
       .builder = builder,
       .air = air,
+      .binding = *binding_map,
       .llvm = context,
       .module = module,
       .function = function,

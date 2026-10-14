@@ -1,3 +1,21 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
@@ -12,14 +30,15 @@
 namespace dxmt {
 
 ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Device device, InternalCommandLibrary &lib) :
+    device_(device),
+    lib(lib),
     emulated_cmd(device, lib, *this),
-    clear_rt_cmd(device, lib, *this),
+    clear_rt_cmd(device, *this),
     blit_depth_stencil_cmd(device, lib, *this),
-    clear_res_cmd(device, lib, *this),
+    clear_uav_cmd(device, *this),
     mv_scale_cmd(device, lib, *this),
     tile_barrier_cmd(device, lib, *this),
     timestamp_state_(device),
-    device_(device),
     queue_(queue) {
   dummy_sampler_info_.support_argument_buffers = true;
   dummy_sampler_info_.border_color = WMTSamplerBorderColorTransparentBlack;
@@ -93,12 +112,56 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
   {
     auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
     cmd.offset = getFinalArgumentBufferOffset(offset);
-    cmd.index = 16;
+    cmd.index = SM50_BINDING_INDEX_VERTEX_BUFFER;
     if constexpr (kind == PipelineKind::Geometry || kind == PipelineKind::Tessellation)
       cmd.type = WMTRenderCommandSetObjectBufferOffset;
     else
       cmd.type = WMTRenderCommandSetVertexBufferOffset;
   }
+}
+struct SO_BUFFER_ENTRY {
+  uint64_t buffer_handle;
+  uint64_t counter_handle;
+};
+
+template <>
+void
+ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Ordinary>(uint64_t offset) {
+
+  SO_BUFFER_ENTRY *entries = getMappedArgumentBuffer<SO_BUFFER_ENTRY>(offset);
+
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto &state = so_[slot];
+    auto &buffer = state.buffer;
+    if (!buffer.ptr()) {
+      entries[slot].buffer_handle = 0;
+      entries[slot].counter_handle = 0;
+      continue;
+    }
+    auto [buffer_alloc, buffer_offset] = access<PipelineStage::Vertex>(buffer, state.offset, 0, ResourceAccess::Write);
+    entries[slot].buffer_handle = buffer_alloc->gpuAddress() + buffer_offset + state.offset;
+    entries[slot].counter_handle = 0; // TODO(stream-output): counter & buffer_filled_size
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(buffer.ptr(), false, true);
+  };
+  {
+    auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
+    cmd.offset = getFinalArgumentBufferOffset(offset);
+    cmd.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
+    cmd.type = WMTRenderCommandSetVertexBufferOffset;
+  }
+
+  currentRenderEncoder()->use_emulated_so = 1;
+}
+
+template <>
+void
+ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Tessellation>(uint64_t offset) {
+  ERR("unimplemented stream output from tessellation pipeline");
+}
+template <>
+void
+ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Geometry>(uint64_t offset) {
+  ERR("unimplemented stream output from geometry pipeline");
 }
 
 template void ArgumentEncodingContext::encodeConstantBuffers<PipelineStage::Vertex, PipelineKind::Ordinary>(
@@ -170,22 +233,21 @@ ArgumentEncodingContext::encodeConstantBuffers(const MTL_SHADER_REFLECTION *refl
     }
   }
 
-  /* kConstantBufferTableBinding = 29 */
   if constexpr (stage == PipelineStage::Compute) {
     auto &cmd = encodeComputeCommand<wmtcmd_compute_setbufferoffset>();
     cmd.type = WMTComputeCommandSetBufferOffset;
     cmd.offset = getFinalArgumentBufferOffset<true>(offset);
-    cmd.index = 29;
+    cmd.index = SM50_BINDING_INDEX_CONSTANT_BUFFER;
   } else {
     auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
     cmd.offset = getFinalArgumentBufferOffset(offset);
-    cmd.index = 29;
+    cmd.index = SM50_BINDING_INDEX_CONSTANT_BUFFER;
     if constexpr (stage == PipelineStage::Vertex) {
       if constexpr (kind == PipelineKind::Geometry)
         cmd.type = WMTRenderCommandSetObjectBufferOffset;
       else if constexpr (kind == PipelineKind::Tessellation) {
         cmd.type = WMTRenderCommandSetObjectBufferOffset;
-        cmd.index = 27;
+        cmd.index = SM50_BINDING_INDEX_CONSTANT_BUFFER2;
       } else
         cmd.type = WMTRenderCommandSetVertexBufferOffset;
     } else if constexpr (stage == PipelineStage::Pixel) {
@@ -343,9 +405,9 @@ ArgumentEncodingContext::encodeShaderResources(
       }
       if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_UAV_COUNTER) {
         if (uav.counter) {
-          auto [counter_alloc, offset] = access<stage>(uav.counter, 0, 4, ResourceAccess::All);
+          auto [counter_alloc, offset] = access<stage>(uav.counter);
           encoded_buffer[arg.StructurePtrOffset + 2] = counter_alloc->gpuAddress() + offset;
-          makeResident<stage, kind>(uav.counter.ptr(), true, true);
+          makeResident<stage, kind>(uav.counter.ptr());
         } else {
           /*
            * potentially cause gpu pagefault, even providing a dummy buffer doesn't improve since the returned
@@ -363,17 +425,17 @@ ArgumentEncodingContext::encodeShaderResources(
     auto &cmd = encodeComputeCommand<wmtcmd_compute_setbufferoffset>();
     cmd.type = WMTComputeCommandSetBufferOffset;
     cmd.offset = getFinalArgumentBufferOffset<true>(offset);
-    cmd.index = 30;
+    cmd.index = SM50_BINDING_INDEX_ARGUMENT_TABLE;
   } else {
     auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
     cmd.offset = getFinalArgumentBufferOffset(offset);
-    cmd.index = 30;
+    cmd.index = SM50_BINDING_INDEX_ARGUMENT_TABLE;
     if constexpr (stage == PipelineStage::Vertex) {
       if constexpr (kind == PipelineKind::Geometry)
         cmd.type = WMTRenderCommandSetObjectBufferOffset;
       else if constexpr (kind == PipelineKind::Tessellation) {
         cmd.type = WMTRenderCommandSetObjectBufferOffset;
-        cmd.index = 28;
+        cmd.index = SM50_BINDING_INDEX_ARGUMENT_TABLE2;
       } else
         cmd.type = WMTRenderCommandSetVertexBufferOffset;
     } else if constexpr (stage == PipelineStage::Pixel) {
@@ -388,6 +450,11 @@ ArgumentEncodingContext::encodeShaderResources(
       assert(0 && "Not implemented or unreachable");
     }
   }
+}
+
+CounterAllocation *
+ArgumentEncodingContext::getCounterAllocation(Rc<Counter> const &counter) {
+  return queue_.counter_pool.getCurrentAllocation(counter);
 }
 
 void
@@ -407,9 +474,10 @@ ArgumentEncodingContext::clearColor(Rc<Texture> &&texture, uint64_t viewId, unsi
   encoder_info->fence_update = {encoder_info->id};
   encoder_info->clear_dsv = 0;
   encoder_info->color = color;
+  SanitizeRTVClearColor(texture->pixelFormat(viewId), encoder_info->color);
   encoder_info->array_length = arrayLength;
-  encoder_info->width = texture->width();
-  encoder_info->height = texture->height();
+  encoder_info->width = texture->width(viewId);
+  encoder_info->height = texture->height(viewId);
   encoder_current = encoder_info;
 
   encoder_info->attachment = access(texture, viewId, ResourceAccess::Write);
@@ -432,8 +500,8 @@ ArgumentEncodingContext::clearDepthStencil(
   encoder_info->clear_dsv = flag & DepthStencilPlanarFlags(texture->pixelFormat());
   encoder_info->depth_stencil = {depth, stencil};
   encoder_info->array_length = arrayLength;
-  encoder_info->width = texture->width();
-  encoder_info->height = texture->height();
+  encoder_info->width = texture->width(viewId);
+  encoder_info->height = texture->height(viewId);
   encoder_current = encoder_info;
 
   encoder_info->attachment = access(texture, viewId, ResourceAccess::Write);
@@ -900,22 +968,24 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStagePreRaster); },
           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStageFragment); }
       );
-      encoder.setVertexBuffer(gpu_buffer_, 0, 16);
-      encoder.setVertexBuffer(gpu_buffer_, 0, 29);
-      encoder.setVertexBuffer(gpu_buffer_, 0, 30);
-      encoder.setFragmentBuffer(gpu_buffer_, 0, 29);
-      encoder.setFragmentBuffer(gpu_buffer_, 0, 30);
+      encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_VERTEX_BUFFER);
+      encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
+      encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
+      if (data->use_emulated_so)
+        encoder.setVertexBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_STREAM_OUTPUT0);
+      encoder.setFragmentBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
+      encoder.setFragmentBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
       if (data->use_geometry || data->use_tessellation) {
-        encoder.setObjectBuffer(gpu_buffer_, 0, 16);
-        encoder.setObjectBuffer(gpu_buffer_, 0, 21); // draw arguments
+        encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_VERTEX_BUFFER);
+        encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_DRAW_ARGUMENTS);
         if (data->use_tessellation) {
-          encoder.setObjectBuffer(gpu_buffer_, 0, 27);
-          encoder.setObjectBuffer(gpu_buffer_, 0, 28);
+          encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER2);
+          encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE2);
         }
-        encoder.setObjectBuffer(gpu_buffer_, 0, 29);
-        encoder.setObjectBuffer(gpu_buffer_, 0, 30);
-        encoder.setMeshBuffer(gpu_buffer_, 0, 29);
-        encoder.setMeshBuffer(gpu_buffer_, 0, 30);
+        encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
+        encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
+        encoder.setMeshBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
+        encoder.setMeshBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
       }
       if (data->gs_arg_marshal_tasks.size()) {
         auto task_count = data->gs_arg_marshal_tasks.size();
@@ -994,9 +1064,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       setcmd.next.set(nullptr);
       setcmd.buffer = data->allocated_argbuf;
       setcmd.offset = 0;
-      setcmd.index = 29;
+      setcmd.index = SM50_BINDING_INDEX_CONSTANT_BUFFER;
       encoder.encodeCommands((const wmtcmd_compute_nop *)&setcmd);
-      setcmd.index = 30;
+      setcmd.index = SM50_BINDING_INDEX_ARGUMENT_TABLE;
       encoder.encodeCommands((const wmtcmd_compute_nop *)&setcmd);
       encoder.encodeCommands(&data->cmd_head);
       data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id]); });
@@ -1334,6 +1404,7 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       }
       r1->use_tessellation = r0->use_tessellation || r1->use_tessellation;
       r1->use_geometry = r0->use_geometry || r1->use_geometry;
+      r1->use_emulated_so = r0->use_emulated_so || r1->use_emulated_so;
       std::move(
         r1->gs_arg_marshal_tasks.begin(),
         r1->gs_arg_marshal_tasks.end(),
@@ -1518,6 +1589,226 @@ ArgumentEncodingContext::isResolveSignatureMatched(RenderEncoderData *render, Re
     }
   }
   return ret;
+}
+
+template <>
+WMT::Reference<WMT::ComputePipelineState>
+SimpleCommandContext<ArgumentEncodingContext>::getComputePipeline(std::string name) {
+  auto lib = ctx.lib.getLibrary();
+  auto func = lib.newFunction(name.c_str());
+  if (!func)
+    return {};
+  WMT::Reference<WMT::Error> err;
+  auto pso = ctx.device_.newComputePipelineState(func, err);
+  if (err) {
+    ERR("Failed to create compute PSO: ", err.description().getUTF8String());
+  }
+  return pso;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::startComputePass() {
+  ctx.startComputePass(0);
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::endPass() {
+  ctx.endPass();
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setComputePSO(WMT::ComputePipelineState pso, WMTSize tgsize) {
+  auto &setpso = ctx.encodeComputeCommand<wmtcmd_compute_setpso>();
+  setpso.type = WMTComputeCommandSetPSO;
+  setpso.pso = pso;
+  setpso.threadgroup_size = tgsize;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::dispatch(WMTSize size) {
+  auto &dispatch = ctx.encodeComputeCommand<wmtcmd_compute_dispatch>();
+  dispatch.type = WMTComputeCommandDispatchThreads;
+  dispatch.size = size;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setComputeTexture(
+    uint32_t index, const Rc<Texture> &texture, uint64_t viewId, int flags
+) {
+  auto &dst_ = ctx.access(texture, viewId, flags);
+  auto &settex = ctx.encodeComputeCommand<wmtcmd_compute_settexture>();
+  settex.type = WMTComputeCommandSetTexture;
+  settex.texture = dst_.texture;
+  settex.index = index;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setComputeTexelBuffer(
+    uint32_t index, const Rc<Buffer> &buffer, uint64_t viewId, int flags
+) {
+  auto [dst_, dst_sub_offset] = ctx.access(buffer, viewId, flags);
+  auto &settexbuf = ctx.encodeComputeCommand<wmtcmd_compute_settexture>();
+  settexbuf.type = WMTComputeCommandSetTexture;
+  settexbuf.texture = dst_.texture;
+  settexbuf.index = index;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setComputeBuffer(
+    uint32_t index, const Rc<Buffer> &buffer, uint32_t offset, uint32_t length, int flags
+) {
+  auto [dst_, dst_sub_offset] = ctx.access(buffer, offset, length, flags);
+  auto &setbuf = ctx.encodeComputeCommand<wmtcmd_compute_setbuffer>();
+  setbuf.type = WMTComputeCommandSetBuffer;
+  setbuf.buffer = dst_->buffer();
+  setbuf.index = index;
+  setbuf.offset = 0; // the `offset` and `length` parameter of this function are just for (potential) hazard tracking,
+                     // which we don't need here
+}
+
+template <>
+void *
+SimpleCommandContext<ArgumentEncodingContext>::setComputeBytes(uint32_t index, uint32_t length) {
+  auto &setmeta = ctx.encodeComputeCommand<wmtcmd_compute_setbytes>();
+  setmeta.type = WMTComputeCommandSetBytes;
+  void *temp = ctx.allocate_cpu_heap(length, 16);
+  setmeta.bytes.set(temp);
+  setmeta.length = length;
+  setmeta.index = index;
+  return temp;
+}
+
+template <>
+WMT::Library
+SimpleCommandContext<ArgumentEncodingContext>::getDefaultLibrary() {
+  return ctx.lib.getLibrary();
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::startRenderPass() {
+  auto render = ctx.startRenderPass(0, 0, 0, 0);
+  render->render_target_width = 16384;
+  render->render_target_height = 16384;
+  render->render_target_array_length = 0;
+  render->default_raster_sample_count = 1;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setColorAttachment(
+    uint32_t index, const Rc<Texture> &texture, uint64_t viewId, uint32_t depth_plane
+) {
+  auto encoder = static_cast<RenderEncoderData *>(ctx.encoder_current);
+
+  encoder->colors[index].attachment = ctx.access<PipelineStage::Pixel>(texture, viewId, ResourceAccess::Write);
+  encoder->colors[index].depth_plane = depth_plane;
+  encoder->colors[index].load_action = WMTLoadActionLoad;
+  encoder->colors[index].store_action = WMTStoreActionStore;
+  encoder->render_target_count = std::max<uint32_t>(encoder->render_target_count, index + 1);
+  encoder->render_target_width = std::min<uint32_t>(encoder->render_target_width, texture->width(viewId));
+  encoder->render_target_height = std::min<uint32_t>(encoder->render_target_height, texture->height(viewId));
+  encoder->render_target_array_length = texture->textureType() == WMTTextureType3D
+                                            ? (texture->depth(viewId) - depth_plane)
+                                            : texture->arrayLength(viewId);
+  encoder->default_raster_sample_count = texture->sampleCount();
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setDepthStencilAttachment(
+    const Rc<Texture> &texture, uint64_t viewId, uint32_t dsv_flag
+) {
+  auto encoder = static_cast<RenderEncoderData *>(ctx.encoder_current);
+  if (dsv_flag & 1) {
+    encoder->depth.attachment = ctx.access<PipelineStage::Pixel>(texture, viewId, ResourceAccess::Write);
+    encoder->depth.load_action = WMTLoadActionLoad;
+    encoder->depth.store_action = WMTStoreActionStore;
+  }
+  if (dsv_flag & 2) {
+    encoder->stencil.attachment = ctx.access<PipelineStage::Pixel>(texture, viewId, ResourceAccess::Write);
+    encoder->stencil.load_action = WMTLoadActionLoad;
+    encoder->stencil.store_action = WMTStoreActionStore;
+  }
+  encoder->dsv_planar_flags = dsv_flag;
+  encoder->render_target_width = std::min<uint32_t>(encoder->render_target_width, texture->width(viewId));
+  encoder->render_target_height = std::min<uint32_t>(encoder->render_target_height, texture->height(viewId));
+  encoder->render_target_array_length = texture->arrayLength(viewId);
+  encoder->default_raster_sample_count = texture->sampleCount();
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setRenderPSO(WMT::RenderPipelineState pso) {
+  auto &cmd = ctx.encodeRenderCommand<wmtcmd_render_setpso>();
+  cmd.type = WMTRenderCommandSetPSO;
+  cmd.pso = pso;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setViewport(WMTViewport viewport) {
+  auto &cmd = ctx.encodeRenderCommand<wmtcmd_render_setviewport>();
+  cmd.type = WMTRenderCommandSetViewport;
+  cmd.viewport = viewport;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setDepthStencilState(WMT::DepthStencilState dsso) {
+  auto &cmd = ctx.encodeRenderCommand<wmtcmd_render_setdepthstencilstate>();
+  cmd.type = WMTRenderCommandSetDepthStencilState;
+  cmd.depth_stencil_state = dsso;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setScissorRect(WMTScissorRect rect) {
+  auto &cmd = ctx.encodeRenderCommand<wmtcmd_render_setscissorrect>();
+  cmd.type = WMTRenderCommandSetScissorRect;
+  cmd.scissor_rect = rect;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setStencilReference(uint8_t stencil_ref) {
+  auto &cmd = ctx.encodeRenderCommand<wmtcmd_render_setstencilref>();
+  cmd.type = WMTRenderCommandSetStencilRef;
+  cmd.stencil_ref = stencil_ref;
+}
+
+template <>
+void *
+SimpleCommandContext<ArgumentEncodingContext>::setFragmentBytes(uint32_t index, uint32_t length) {
+  auto &setmeta = ctx.encodeRenderCommand<wmtcmd_render_setbytes>();
+  setmeta.type = WMTRenderCommandSetFragmentBytes;
+  void *temp = ctx.allocate_cpu_heap(length, 16);
+  setmeta.bytes.set(temp);
+  setmeta.length = length;
+  setmeta.index = index;
+  return temp;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::draw(
+    WMTPrimitiveType primitive, uint32_t vertex_start, uint32_t vertex_count, int32_t base_instance,
+    uint32_t instance_count
+) {
+  auto &draw = ctx.encodeRenderCommand<wmtcmd_render_draw>();
+  draw.type = WMTRenderCommandDraw;
+  draw.primitive_type = primitive;
+  draw.vertex_start = vertex_start;
+  draw.vertex_count = vertex_count;
+  draw.base_instance = base_instance;
+  draw.instance_count = instance_count;
 }
 
 } // namespace dxmt
