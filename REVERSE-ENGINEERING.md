@@ -31,6 +31,29 @@ Explicitly (as illustration, not limitation), all of the following are allowed a
 - **Any depth:** from a single opcode's timing behaviour to a full reconstruction of Apple's
   translator and a compatible reimplementation of it.
 
+## Anti-tamper, anti-cheat, and platform detection (explicit)
+
+Running real software — modern games such as F1 24 and everything like them — means meeting
+their protections head-on. That work is fully permitted here:
+
+- **Anti-tamper, DRM, and copy protection** (Denuvo-class and everything else): analysis,
+  understanding, documentation, and the implementation of whatever is needed for a legitimate
+  owner's software to install, launch, and run on macOS.
+- **Anti-cheat systems**: understanding and interoperability work — how they detect the
+  environment, what they require of it, and how honest play is preserved while the game runs
+  through Wine, the translation layers, and this project's components.
+- **Platform, OS, and environment detection**: every check a program performs — CPU, GPU,
+  OS version, virtualization, Rosetta presence, Wine "smell", entitlements, code signing — may
+  be studied, documented, and answered or satisfied in whatever way makes the software run as
+  it would on its intended platform.
+- **The implementing side is as permitted as the analysis**: hooks, patches, shims, wrappers,
+  interposers (DYLD, LD_PRELOAD-style or otherwise), binary patching, memory manipulation,
+  protocol reimplementation, and any other mechanism that contributes to running the software
+  on macOS — all of it is in scope for these repositories.
+
+The purpose of all of it is enabling: any sort of software — games, launchers, clients,
+installers, drivers — running on macOS through these repositories' stacks, in human time.
+
 ## Purpose
 
 Research, preservation, and interoperability: to keep the DirectX software heritage runnable natively on Apple Silicon across every macOS release that matters, in human time. Reverse engineering is not a last resort here; it is a primary method.
