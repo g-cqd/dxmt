@@ -268,7 +268,10 @@ public:
     case D3D12_FEATURE_SHADER_MODEL: {
       if (DataSize != sizeof(D3D12_FEATURE_DATA_SHADER_MODEL))
         return E_INVALIDARG;
-      reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData)->HighestShaderModel = D3D_SHADER_MODEL_5_1;
+      auto *out = reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData);
+      if (out->HighestShaderModel > D3D_SHADER_MODEL_6_0)
+        return E_INVALIDARG;
+      out->HighestShaderModel = std::min(D3D_SHADER_MODEL_6_0, out->HighestShaderModel);
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS: {
@@ -329,7 +332,7 @@ public:
       out->TotalLaneCount = 0;
       // If CheckFeatureSupport succeeds this value will always be true.
       out->ExpandedComputeResourceStates = TRUE;
-      out->Int64ShaderOps = FALSE;
+      out->Int64ShaderOps = TRUE;
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS12: {
@@ -346,7 +349,7 @@ public:
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS4 *>(pFeatureData);
       out->MSAA64KBAlignedTextureSupported = TRUE;
-      out->Native16BitShaderOpsSupported = FALSE; // TODO(d3d12): should be true
+      out->Native16BitShaderOpsSupported = TRUE;
       // TODO(d3d12): revise when d3d12 shared resource is implemented
       out->SharedResourceCompatibilityTier = D3D12_SHARED_RESOURCE_COMPATIBILITY_TIER_0;
       return S_OK;
