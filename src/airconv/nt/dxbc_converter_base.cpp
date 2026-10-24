@@ -2940,9 +2940,11 @@ Converter::UseFastMath(bool OptOut) {
   this is not handled yet (need further investigation, probably need a pass for un-fuse/re-fuse)
   */
   if (ctx.shader_type == microsoft::D3D11_SB_COMPUTE_SHADER || ctx.shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
-    FMF.setAllowContract();
-    FMF.setAllowReassoc();
-    if (!air.getOptions().preciseDivide)
+    if (!air.getOptions().strictMath) {
+      FMF.setAllowContract();
+      FMF.setAllowReassoc();
+    }
+    if (!air.getOptions().preciseDivide && !air.getOptions().strictMath)
       FMF.setAllowReciprocal();
   }
 

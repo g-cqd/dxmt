@@ -112,6 +112,8 @@ public:
   /// Pixel and compute shaders do not get the fast-math `arcp` flag: the Apple GPU compiler would turn `x / w` of two
   /// interpolants into a projective texture sample that it cannot link on some GPUs.
   bool preciseDivide = false;
+  /// Pixel and compute shaders get none of the fast-math flags `contract`, `reassoc` and `arcp`.
+  bool strictMath = false;
 };
 
 class AIRBuilder {

@@ -20,6 +20,8 @@ getGlobalShaderFlag() {
       shader_flag |= SM50_SHADER_FLAG_DEFUSE_FMA;
     if (Config::getInstance().getOption<bool>("d3d11.preciseDivide", false))
       shader_flag |= SM50_SHADER_FLAG_PRECISE_DIVIDE;
+    if (Config::getInstance().getOption<bool>("d3d11.strictMath", false))
+      shader_flag |= SM50_SHADER_FLAG_STRICT_MATH;
     Logger::info(str::format("global shader flags: ", (unsigned int)shader_flag));
   });
   return shader_flag;
