@@ -208,6 +208,7 @@ convert_dxbc_geometry_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .preciseDivide = bool(shader_flags & SM50_SHADER_FLAG_PRECISE_DIVIDE),
       },
       builder, nulldbg
   );
@@ -635,6 +636,7 @@ convert_dxbc_vertex_for_geometry_shader(
       {
           .sampleNaNToZero = bool(shader_flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO),
           .defuseFma = bool(shader_flags & SM50_SHADER_FLAG_DEFUSE_FMA),
+          .preciseDivide = bool(shader_flags & SM50_SHADER_FLAG_PRECISE_DIVIDE),
       },
       builder, nulldbg
   );

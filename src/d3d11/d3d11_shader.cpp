@@ -18,6 +18,8 @@ getGlobalShaderFlag() {
       shader_flag |= SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO;
     if (Config::getInstance().getOption<bool>("d3d11.defuseFma", false))
       shader_flag |= SM50_SHADER_FLAG_DEFUSE_FMA;
+    if (Config::getInstance().getOption<bool>("d3d11.preciseDivide", false))
+      shader_flag |= SM50_SHADER_FLAG_PRECISE_DIVIDE;
   });
   return shader_flag;
 };

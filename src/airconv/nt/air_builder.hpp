@@ -109,6 +109,9 @@ class AIRBuilderOptions {
 public:
   bool sampleNaNToZero = false;
   bool defuseFma = false;
+  /// Pixel and compute shaders do not get the fast-math `arcp` flag: the Apple GPU compiler would turn `x / w` of two
+  /// interpolants into a projective texture sample that it cannot link on some GPUs.
+  bool preciseDivide = false;
 };
 
 class AIRBuilder {
@@ -579,6 +582,9 @@ public:
 protected:
   raw_ostream &debug;
   AIRBuilderOptions options;
+public:
+  const AIRBuilderOptions &getOptions() const { return options; }
+private:
 
   Value *
   GetOffset(const Texture &Texture, const int32_t ImmOffset[3]) {

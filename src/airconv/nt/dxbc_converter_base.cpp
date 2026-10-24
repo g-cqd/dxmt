@@ -2942,7 +2942,8 @@ Converter::UseFastMath(bool OptOut) {
   if (ctx.shader_type == microsoft::D3D11_SB_COMPUTE_SHADER || ctx.shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
     FMF.setAllowContract();
     FMF.setAllowReassoc();
-    FMF.setAllowReciprocal();
+    if (!air.getOptions().preciseDivide)
+      FMF.setAllowReciprocal();
   }
 
   FMF.setApproxFunc();
