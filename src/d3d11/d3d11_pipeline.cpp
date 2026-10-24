@@ -4,9 +4,30 @@
 #include "d3d11_device.hpp"
 #include "d3d11_shader.hpp"
 #include "log/log.hpp"
+#include "config/config.hpp"
 #include <atomic>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace dxmt {
+
+/// Debug aid: `debug.skipPixelShaders = 1a2b3c4d,5e6f7a8b` (the first eight hex digits of the shader's SHA-1, the number in the
+/// `ps_<number>_...` function name) makes DXMT drop every draw that uses one of those pixel shaders, as if its pipeline had failed.
+static bool IsDebugSkippedPixelShader(const std::string &sha1_prefix) {
+  static const std::vector<std::string> skipped = [] {
+    std::vector<std::string> out;
+    std::stringstream list(Config::getInstance().getOption<std::string>("debug.skipPixelShaders", ""));
+    for (std::string item; std::getline(list, item, ',');)
+      if (!item.empty())
+        out.push_back(item);
+    return out;
+  }();
+  for (const auto &s : skipped)
+    if (s == sha1_prefix)
+      return true;
+  return false;
+}
 
 class MTLCompiledGraphicsPipelineImpl
     : public MTLCompiledGraphicsPipeline {
@@ -40,6 +61,7 @@ public:
           depth_stencil_format == WMTPixelFormatInvalid,
           unorm_output_reg_mask});
       ps_valid_render_targets = pDesc->PixelShader->reflection().PSValidRenderTargets;
+      debug_skip_ = IsDebugSkippedPixelShader(pDesc->PixelShader->sha1().string().substr(0, 8));
     } else {
       PixelShader = nullptr;
       ps_valid_render_targets = 0;
@@ -54,6 +76,11 @@ public:
   ThreadpoolWork *RunThreadpoolWork() {
 
     TRACE("Start compiling 1 PSO");
+
+    if (debug_skip_) {
+      state_ = nullptr;
+      return this;
+    }
 
     WMT::Reference<WMT::Error> err;
     MTL_COMPILED_SHADER vs, ps;
@@ -116,6 +143,7 @@ public:
   }
 
 private:
+  bool debug_skip_ = false;
   UINT num_rtvs;
   UINT ps_valid_render_targets;
   WMTPixelFormat rtv_formats[8];
