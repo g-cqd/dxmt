@@ -33,6 +33,7 @@ DxgiOptions::DxgiOptions(const Config &config) {
   this->customDeviceDesc =
       config.getOption<std::string>("dxgi.customDeviceDesc", "");
   this->forceSDR = config.getOption<bool>("dxgi.forceSDR", false);
+  this->maxDeviceMemoryMiB = static_cast<uint64_t>(std::max<int32_t>(0, config.getOption<int32_t>("dxgi.maxDeviceMemory", 0)));
 }
 
 } // namespace dxmt

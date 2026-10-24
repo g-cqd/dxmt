@@ -10,7 +10,10 @@
 #include "../d3d10/d3d10_shader.hpp"
 #include "../d3d10/d3d10_input_layout.hpp"
 #include <cstring>
+#include <fstream>
 #include <shared_mutex>
+#include "util_env.hpp"
+#include "util_string.hpp"
 
 namespace dxmt {
 
@@ -217,6 +220,21 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   std::unordered_map<ManagedShader, std::unique_ptr<MTLCompiledComputePipeline>> pipelines_cs_;
   dxmt::mutex mutex_cs_;
 
+  /// Debug aid: with DXMT_DUMP_SHADERS=<dir> every distinct shader is written as <sha1 first 8 hex>.dxbc, the same
+  /// number the converted function carries in its name (vs_/ps_<number>_...), so a failing pipeline can be traced to its DXBC.
+  static void DumpShader(const Sha1Digest &sha1, const void *pBytecode, uint32_t BytecodeLength) {
+    static const std::string dir = env::getEnvVar("DXMT_DUMP_SHADERS");
+    if (dir.empty())
+      return;
+    std::string path = dir;
+    if (path.back() != '/')
+      path += '/';
+    path += sha1.string().substr(0, 8) + ".dxbc";
+    std::ofstream file(str::topath(path.c_str()).c_str(), std::ios::binary);
+    if (file)
+      file.write(static_cast<const char *>(pBytecode), BytecodeLength);
+  }
+
   CachedSM50Shader *CreateShader(const void *pBytecode,
                                  uint32_t BytecodeLength) {
     auto sha1 = Sha1HashState::compute(pBytecode, BytecodeLength);
@@ -227,6 +245,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
         return shaders_.at(sha1).get();
       }
     }
+    DumpShader(sha1, pBytecode, BytecodeLength);
     sm50_error_t err;
     sm50_shader_t sm50;
     MTL_SHADER_REFLECTION reflection;

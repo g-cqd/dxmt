@@ -177,6 +177,7 @@ public:
       pDesc->DedicatedVideoMemory = device_.recommendedMaxWorkingSetSize() / 2; // FIXME: use a more appropriate value
     else
       pDesc->DedicatedVideoMemory = device_.recommendedMaxWorkingSetSize();
+    pDesc->DedicatedVideoMemory = LimitVideoMemory(pDesc->DedicatedVideoMemory);
     pDesc->DedicatedSystemMemory = 0;
     pDesc->SharedSystemMemory = 0;
     pDesc->AdapterLuid = GetAdapterLuid(device_);
@@ -244,7 +245,7 @@ public:
       return E_INVALIDARG;
 
     // we don't actually care about MemorySegmentGroup
-    pVideoMemoryInfo->Budget = device_.recommendedMaxWorkingSetSize();
+    pVideoMemoryInfo->Budget = LimitVideoMemory(device_.recommendedMaxWorkingSetSize());
     pVideoMemoryInfo->CurrentUsage = device_.currentAllocatedSize();
     pVideoMemoryInfo->AvailableForReservation = 0;
     pVideoMemoryInfo->CurrentReservation =
@@ -281,6 +282,13 @@ public:
   D3DKMT_HANDLE STDMETHODCALLTYPE GetLocalD3DKMT() final { return local_kmt_; }
 
 private:
+  /// Applies `dxgi.maxDeviceMemory` (MiB) to a video memory size reported to the application.
+  uint64_t LimitVideoMemory(uint64_t bytes) const {
+    if (options_.maxDeviceMemoryMiB == 0)
+      return bytes;
+    return std::min<uint64_t>(bytes, options_.maxDeviceMemoryMiB << 20);
+  }
+
   WMT::Reference<WMT::Device> device_;
   D3DKMT_HANDLE local_kmt_ = 0;
   Com<IDXGIFactory> factory_;
