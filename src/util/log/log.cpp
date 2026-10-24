@@ -67,7 +67,12 @@ void Logger::emitMsg(LogLevel level, const std::string &message) {
       auto path = getFileName(m_fileName);
 
       if (!path.empty())
-        m_fileStream = std::ofstream(str::topath(path.c_str()).c_str());
+      {
+        // append, so a restart of the game does not erase the previous run's log
+        m_fileStream = std::ofstream(str::topath(path.c_str()).c_str(), std::ios::out | std::ios::app);
+        if (m_fileStream)
+          m_fileStream << "---- log opened ----" << std::endl;
+      }
     }
 
     std::stringstream stream(message);
@@ -87,7 +92,7 @@ void Logger::emitMsg(LogLevel level, const std::string &message) {
       }
 
       if (m_fileStream)
-        m_fileStream << adjusted;
+        m_fileStream << adjusted << std::flush; // flush each message: the file is read while the game runs and after a crash
     }
   }
 }
