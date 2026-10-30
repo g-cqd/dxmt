@@ -64,6 +64,15 @@ namespace dxmt {
     { R"(\\helldivers2\.exe$)", {{
       { "d3d11.maxFeatureLevel",   "12_1" },
     }} },
+    /** Battlefield 3: the settings of the tuned bundle that played smoothly on an M2 Pro
+        (NaN-safe sampling and no fused multiply-add against black artifacts, Metal frame
+        pacing at 60 for even frame times). EA starts the game with a clean environment,
+        so they live here rather than in DXMT_CONFIG. dxmt.conf or DXMT_CONFIG override them. */
+    { R"(\\bf3\.exe$)", {{
+      { "d3d11.sampleNaNToZero",     "True" },
+      { "d3d11.defuseFma",           "True" },
+      { "d3d11.preferredMaxFrameRate", "60" },
+    }} },
   }};
 
   const Config* findProfile(const ProfileList& profiles, const std::string& appName) {
