@@ -170,21 +170,15 @@ public:
 };
 
 /**
-Metal hands out errors autoreleased (+0), but Reference<Error> releases what it holds.
-Wrappers write the error into a plain handle and adopt it with this, which retains it.
-Storing the +0 handle in the Reference directly released the error twice; the thread
-crashed when its autorelease pool drained (a pipeline compile thread when it exits,
-which hung process teardown after a pipeline failed to compile).
+The unix side retains every error it returns (upstream 5cafc43), so the handle is +1 and the
+Reference adopts it without another retain. Before that, Metal's autoreleased (+0) error went
+straight into a Reference<Error> whose destructor released it once too often; the thread crashed
+when its autorelease pool drained (a pipeline compile thread when it exits, which hung process
+teardown after a pipeline failed to compile).
 */
 inline void
-AdoptAutoreleasedError(Reference<Error> &error, obj_handle_t autoreleased) {
-  if (autoreleased == NULL_OBJECT_HANDLE) {
-    error = nullptr;
-    return;
-  }
-  Error non_retained;
-  non_retained.handle = autoreleased;
-  error = non_retained; // retains
+AdoptAutoreleasedError(Reference<Error> &error, obj_handle_t retained) {
+  error = Reference<Error>(retained); // takes ownership of the +1 handle; NULL stays empty
 }
 
 class DispatchData : public Object {

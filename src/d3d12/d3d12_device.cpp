@@ -47,8 +47,13 @@ class MTLD3D12DeviceImpl : public MTLD3D12Object<ComObject<MTLD3D12Device>> {
   InternalCommandLibrary command_library;
   FormatCapabilityInspector format_inspector_;
 
+  D3D_FEATURE_LEVEL min_feature_level_;
+
 public:
-  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter) : adapter_(adapter), command_library(adapter_->GetMTLDevice()) {}
+  MTLD3D12DeviceImpl(IMTLDXGIAdapter *adapter, D3D_FEATURE_LEVEL min_feature_level) :
+      adapter_(adapter),
+      command_library(adapter_->GetMTLDevice()),
+      min_feature_level_(min_feature_level) {}
 
   ~MTLD3D12DeviceImpl() {}
 
@@ -76,7 +81,7 @@ public:
 
   D3D_FEATURE_LEVEL
   GetFeatureLevel() {
-    return D3D_FEATURE_LEVEL_11_0; // FIXME
+    return min_feature_level_;
   };
 
   HRESULT
@@ -319,7 +324,8 @@ public:
       out->BarycentricsSupported = FALSE;
       out->CopyQueueTimestampQueriesSupported = FALSE;
       out->ViewInstancingTier = D3D12_VIEW_INSTANCING_TIER_NOT_SUPPORTED;
-      out->WriteBufferImmediateSupportFlags = D3D12_COMMAND_LIST_SUPPORT_FLAG_NONE;
+      // DIRECT + BUNDLE + COPY + COMPUTE
+      out->WriteBufferImmediateSupportFlags = (D3D12_COMMAND_LIST_SUPPORT_FLAGS)0xF;
       return S_OK;
     }
     case D3D12_FEATURE_D3D12_OPTIONS1: {
@@ -1276,8 +1282,8 @@ public:
 };
 
 HRESULT
-CreateD3D12Device(IMTLDXGIAdapter *adapter, const IID &riid, void **ppDevice) {
-  auto device = Com(new MTLD3D12DeviceImpl(adapter));
+CreateD3D12Device(IMTLDXGIAdapter *pAdapter, D3D_FEATURE_LEVEL MinimumFeatueLevel, const IID &riid, void **ppDevice) {
+  auto device = Com(new MTLD3D12DeviceImpl(pAdapter, MinimumFeatueLevel));
   HRESULT hr = device->Initialize();
   if (FAILED(hr))
     return hr;
