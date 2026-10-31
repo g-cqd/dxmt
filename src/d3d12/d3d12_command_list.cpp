@@ -1692,11 +1692,11 @@ public:
     IMPLEMENT_ME
   };
 
-  void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE SetMarker(UINT Metadata, const void *data, UINT size) {}; /* PIX marker: no-op, as on the queue */
 
-  void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *data, UINT size) { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE BeginEvent(UINT Metadata, const void *data, UINT size) {};
 
-  void STDMETHODCALLTYPE EndEvent() { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE EndEvent() {};
 
   void STDMETHODCALLTYPE ExecuteIndirect(
       ID3D12CommandSignature *pCommandSignature, UINT MaxCommandCount, ID3D12Resource *pArgBuffer,
