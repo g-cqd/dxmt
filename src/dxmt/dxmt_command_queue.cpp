@@ -229,8 +229,10 @@ void CommandQueue::Retain(uint64_t seq, Allocation* allocation) {
   auto &tracker = chunk.ref_tracker;
   constexpr size_t block_size = decltype(reftracker_storage_allocator)::block_size;
   while (unlikely(!tracker.track(allocation))) {
-    auto [temp_buffer, _] = reftracker_storage_allocator.allocate(seq, cpu_coherent.signaledValue(), block_size, 1);
-    tracker.addStorage(temp_buffer.ptr, block_size);
+    // the allocator returns a block and an offset into it: several storages share one ring buffer
+    auto [temp_buffer, offset] =
+        reftracker_storage_allocator.allocate(seq, cpu_coherent.signaledValue(), block_size, alignof(std::max_align_t));
+    tracker.addStorage(ptr_add(temp_buffer.ptr, offset), block_size);
   }
 };
 
