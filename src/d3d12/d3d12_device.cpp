@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include <cstring>
 #include "d3d12_device.hpp"
 #include "d3d12_device_child.hpp"
 #include "Metal.hpp"
@@ -222,16 +223,11 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_ROOT_SIGNATURE))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_ROOT_SIGNATURE *>(pFeatureData);
-      switch (out->HighestVersion) {
-      default:
+      /* Highest supported version at or below the requested one (1.2 and later are lowered to 1.1). */
+      if (out->HighestVersion < D3D_ROOT_SIGNATURE_VERSION_1)
         return E_INVALIDARG;
-      case D3D_ROOT_SIGNATURE_VERSION_1:
-        out->HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1;
-        break;
-      case D3D_ROOT_SIGNATURE_VERSION_1_1:
-        out->HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        break;
-      }
+      out->HighestVersion = out->HighestVersion >= D3D_ROOT_SIGNATURE_VERSION_1_1 ? D3D_ROOT_SIGNATURE_VERSION_1_1
+                                                                                  : D3D_ROOT_SIGNATURE_VERSION_1;
       return S_OK;
     }
     case D3D12_FEATURE_FEATURE_LEVELS: {
@@ -274,8 +270,8 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_SHADER_MODEL))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_SHADER_MODEL *>(pFeatureData);
-      if (out->HighestShaderModel > D3D_SHADER_MODEL_6_0)
-        return E_INVALIDARG;
+      /* The application passes the highest model it knows and gets the highest supported one at or below it, as
+         from Windows: failing a request above 6.0 made games that ask with 6.6 or 6.7 quit (HITMAN 3). */
       out->HighestShaderModel = std::min(D3D_SHADER_MODEL_6_0, out->HighestShaderModel);
       return S_OK;
     }
@@ -372,8 +368,10 @@ public:
       if (DataSize != sizeof(D3D12_FEATURE_DATA_SHADER_CACHE))
         return E_INVALIDARG;
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_SHADER_CACHE *>(pFeatureData);
-      out->SupportFlags =
-          D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_INPROC_CACHE | D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_DISK_CACHE;
+      /* no SINGLE_PSO: GetCachedBlob is not implemented */
+      out->SupportFlags = D3D12_SHADER_CACHE_SUPPORT_LIBRARY |
+                          D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_INPROC_CACHE |
+                          D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_DISK_CACHE;
       return S_OK;
     }
     case D3D12_FEATURE_FORMAT_SUPPORT: {
@@ -392,6 +390,25 @@ public:
       out->Support2 = (D3D12_FORMAT_SUPPORT2)0xffffffff;
       return S_OK;
     }
+    /* Optional feature groups this implementation supports none of (raytracing, render pass tiers, variable-rate
+       shading, sampler feedback, enhanced barriers, ...): all-zero data means "not supported" / tier 0 for every
+       field.  Failing the query instead makes some games quit (HITMAN 3 exits after OPTIONS5/OPTIONS6 fail). */
+#define DXMT_UNSUPPORTED_OPTIONS(n)                                                                                    \
+  case D3D12_FEATURE_D3D12_OPTIONS##n: {                                                                               \
+    if (DataSize != sizeof(D3D12_FEATURE_DATA_D3D12_OPTIONS##n))                                                       \
+      return E_INVALIDARG;                                                                                             \
+    std::memset(pFeatureData, 0, DataSize);                                                                            \
+    return S_OK;                                                                                                       \
+  }
+      DXMT_UNSUPPORTED_OPTIONS(5)
+      DXMT_UNSUPPORTED_OPTIONS(6)
+      DXMT_UNSUPPORTED_OPTIONS(8)
+      DXMT_UNSUPPORTED_OPTIONS(9)
+      DXMT_UNSUPPORTED_OPTIONS(10)
+      DXMT_UNSUPPORTED_OPTIONS(11)
+      DXMT_UNSUPPORTED_OPTIONS(13)
+      DXMT_UNSUPPORTED_OPTIONS(14)
+#undef DXMT_UNSUPPORTED_OPTIONS
     default:
       break;
     }
@@ -859,7 +876,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreatePipelineLibrary(const void *blob, SIZE_T blob_size, REFIID iid, void **lib) {
-    return E_NOTIMPL;
+    return dxmt::CreatePipelineLibrary(this, blob, blob_size, iid, lib);
   };
 
   HRESULT STDMETHODCALLTYPE

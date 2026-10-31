@@ -213,6 +213,9 @@ CreateDescriptorHeap(
 HRESULT
 CreateQueryHeap(MTLD3D12Device *pDevice, const D3D12_QUERY_HEAP_DESC *pDesc, REFIID riid, void **ppQueryHeap);
 
+HRESULT
+CreatePipelineLibrary(MTLD3D12Device *pDevice, const void *pBlob, SIZE_T BlobLength, REFIID riid, void **ppLibrary);
+
 HRESULT CreateCommittedTexture(
     MTLD3D12Device *pDevice, const D3D12_HEAP_PROPERTIES *pHeapProps, D3D12_HEAP_FLAGS HeapFlags,
     const D3D12_RESOURCE_DESC *pDesc, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE *OptimizedClearValue,
