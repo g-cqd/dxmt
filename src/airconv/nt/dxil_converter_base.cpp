@@ -2247,8 +2247,9 @@ Converter::EmitDiscard(const CallInst &Call) {
   auto Cond = Get(Call.getArgOperand(1));
   if (!Cond)
     return Cond.takeError();
-  if (Call.getNextNonDebugInstruction() && !Call.getNextNonDebugInstruction()->isTerminator())
-    return unsupported("dxil: discard is not the last instruction in a basic block");
+  /* A discard may sit in the middle of a block: the instructions after it go to ContinueBB, which is the insert
+     block when the terminator is translated, so phis in the successors take their incoming value from it
+     (TranslateTerminator uses ir.GetInsertBlock()), and values defined before the discard still dominate. */
   auto *DiscardBB = llvm::BasicBlock::Create(air.getContext(), "discard", ctx.function);
   auto *ContinueBB = llvm::BasicBlock::Create(air.getContext(), "continue", ctx.function);
   ir.CreateCondBr(*Cond, DiscardBB, ContinueBB);
