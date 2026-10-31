@@ -81,7 +81,7 @@ uint64_t
 ResourceInitializer::initWithZero(BufferAllocation *buffer, uint64_t offset, uint64_t length) {
   std::lock_guard<dxmt::mutex> lock(mutex_);
 
-  do {
+  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(buffer);
     ALLOC_BLIT(wmtcmd_blit_fillbuffer, fill);
     fill->type = WMTBlitCommandFillBuffer;
@@ -90,7 +90,8 @@ ResourceInitializer::initWithZero(BufferAllocation *buffer, uint64_t offset, uin
     fill->length = length;
     fill->value = 0;
 
-  } while (0);
+    break;
+  }
 
   return current_seq_id_;
 }
@@ -103,7 +104,7 @@ ResourceInitializer::initDepthStencilWithZero(
   auto height_sub = std::max(1u, texture->height() >> level);
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  do {
+  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_CLEAR(info);
 
@@ -127,7 +128,8 @@ ResourceInitializer::initDepthStencilWithZero(
       info->stencil.level = level;
     }
 
-  } while (0);
+    break;
+  }
 
   return current_seq_id_;
 }
@@ -140,7 +142,7 @@ ResourceInitializer::initRenderTargetWithZero(
   auto height_sub = std::max(1u, texture->height() >> level);
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  do {
+  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_CLEAR(info);
 
@@ -154,7 +156,8 @@ ResourceInitializer::initRenderTargetWithZero(
     info->colors[0].slice = slice;
     info->colors[0].level = level;
 
-  } while (0);
+    break;
+  }
 
   return current_seq_id_;
 }
@@ -205,7 +208,7 @@ ResourceInitializer::initWithZero(
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
 
-  do {
+  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     ALLOC_ZERO(zero, total_bytes_needed);
     RETAIN(allocation);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture, copy);
@@ -221,7 +224,8 @@ ResourceInitializer::initWithZero(
     copy->level = level;
     copy->origin = {0, 0, 0};
 
-  } while (0);
+    break;
+  }
 
   return current_seq_id_;
 }
@@ -274,7 +278,8 @@ ResourceInitializer::initWithData(
   size_t total_bytes_needed = bytes_per_image_needed * depth_sub;
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  do {
+  flushIfOverBudget(total_bytes_needed);
+  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture, copy);
     ALLOC_GPU(temp, total_bytes_needed);
@@ -306,7 +311,8 @@ ResourceInitializer::initWithData(
     copy->level = level;
     copy->origin = {0, 0, 0};
 
-  } while (0);
+    break;
+  }
 
   return current_seq_id_;
 }
@@ -326,7 +332,8 @@ ResourceInitializer::initDepthStencilWithData(
   size_t stencil_bytes_per_image = stencil_bytes_per_row * height_sub;
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  do {
+  flushIfOverBudget(depth_bytes_per_image + stencil_bytes_per_image);
+  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture_withblitoption, depth_copy);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture_withblitoption, stencil_copy);
@@ -376,7 +383,8 @@ ResourceInitializer::initDepthStencilWithData(
     stencil_copy->origin = {0, 0, 0};
     stencil_copy->options = WMTBlitOptionStencilFromDepthStencil;
 
-  } while (0);
+    break;
+  }
 
   return current_seq_id_;
 }
@@ -416,6 +424,7 @@ ResourceInitializer::flushToWait() {
 void
 ResourceInitializer::reset() {
   cpu_command_heap_offset = 0;
+  pending_upload_bytes_ = 0;
 
   clear_render_pass_head.next = nullptr;
   clear_render_pass_tail = &clear_render_pass_head;
@@ -450,6 +459,7 @@ ResourceInitializer::allocateGpuHeap(size_t size, size_t &offset) {
       current_seq_id_, cached_coherent_seq_id, size, kResourceInitializerGpuUploadHeapAlignment
   );
   offset = offset_;
+  pending_upload_bytes_ += size;
   return block.buffer;
 }
 

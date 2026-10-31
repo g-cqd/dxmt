@@ -1,15 +1,30 @@
 #pragma once
 
-// Sequence-tracked bump allocator over blocks from an Allocator (Metal buffers, host memory). Only the C++ standard
-// library and util_math.hpp are needed here, so the logic is unit-tested natively (tests/unit).
-// Define DXMT_RING_BUMP_LOG_NEW_BLOCK(size) before including to log blocks that could not be reused.
+// Sequence-tracked staging allocator over buffers from an Allocator (Metal buffers, host memory).
+//
+// Every allocation belongs to a chunk (seq_id). `coherent_id` passed to allocate() is the last chunk the GPU has
+// finished; memory used by a chunk before it may be handed out again. free_blocks(coherent_id) is called as chunks
+// complete (every chunk up to coherent_id is done); free_blocks(~0) releases everything.
+//
+// - Requests up to BlockSize go to a ring: one buffer, carved from head to tail, wrapping around. A ring that is
+//   full is replaced by one twice as big (the old one is released when its last chunk is done) instead of waiting
+//   for the GPU, which the callers can't do safely here. A ring that stays under a quarter full for
+//   kStagingBlockLifetime chunks is replaced by a smaller one, and an empty idle ring is released.
+// - Larger requests (texture uploads of 64 MB and more) go to an arena: one ring of kLargeArenaBlocks * BlockSize
+//   created on the first large request and released when idle. When the arena is full or the request is bigger
+//   than it, a whole block comes from a pool of power-of-two size classes, reused once the GPU is done with it,
+//   capped at kLargePoolCapBlocks * BlockSize and trimmed when idle.
+//
+// Only the C++ standard library and util_math.hpp are needed here, so the logic is unit-tested natively
+// (tests/unit/run.sh). Define DXMT_RING_BUMP_LOG_NEW_BLOCK(size) before including to log buffer creations.
 
 #include "util_math.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <list>
+#include <memory>
 #include <mutex>
-#include <queue>
 #include <utility>
 
 #ifndef DXMT_RING_BUMP_LOG_NEW_BLOCK
@@ -19,13 +34,14 @@
 namespace dxmt {
 
 constexpr size_t kStagingBlockLifetime = 300;
-// Finished large blocks (bigger than BlockSize) kept for reuse, in units of BlockSize (32 MB blocks: 512 MB).
+// Finished large blocks kept for reuse, in units of BlockSize (32 MB blocks: 512 MB).
 constexpr size_t kLargePoolCapBlocks = 16;
+// Arena for large requests, in units of BlockSize (32 MB blocks: 256 MB); created on the first large request.
+constexpr size_t kLargeArenaBlocks = 8;
 
 template <typename Allocator, size_t BlockSize, class mutex> class RingBumpStateImpl {
 
 public:
-
   static constexpr size_t block_size = BlockSize;
 
   RingBumpStateImpl(Allocator &&allocator) : allocator_(std::move(allocator)) {}
@@ -36,20 +52,77 @@ public:
   void free_blocks(uint64_t coherent_id);
 
 private:
-  struct Allocation {
-    size_t allocated_size;
-    size_t total_size;
-    uint64_t last_used_seq_id;
-    uint64_t inc_time_to_live;
-    Allocator::Block block;
+  // One buffer carved as a ring. `regions` are the live ranges in allocation order; a chunk may own several
+  // (one per wrap). The live part runs from regions.front().begin to regions.back().end, wrapping at capacity.
+  struct Ring {
+    struct Region {
+      uint64_t seq;
+      size_t begin, end;
+    };
+    size_t capacity;
+    typename Allocator::Block block;
+    std::deque<Region> regions;
+    size_t peak_used = 0; // since the last shrink check
+    uint64_t idle_time = 0;
+
+    bool
+    empty() const {
+      return regions.empty();
+    }
+    uint64_t
+    last_seq() const {
+      return regions.empty() ? 0 : regions.back().seq;
+    }
+    size_t
+    used() const {
+      if (regions.empty())
+        return 0;
+      size_t tail = regions.front().begin, head = regions.back().end;
+      return head > tail ? head - tail : capacity - tail + head;
+    }
+    // Drops the regions of chunks before done_before.
+    void
+    retire(uint64_t done_before) {
+      while (!regions.empty() && regions.front().seq < done_before)
+        regions.pop_front();
+    }
+    // Places `size` bytes for chunk `seq`; false when they don't fit.
+    bool
+    place(uint64_t seq, size_t size, size_t alignment, size_t &offset) {
+      size_t need = size ? size : 1; // a zero-size allocation still owns a byte, so regions never collapse
+      size_t at;
+      if (regions.empty()) {
+        if (need > capacity)
+          return false;
+        at = 0;
+      } else {
+        size_t tail = regions.front().begin, head = regions.back().end;
+        if (head > tail) { // live [tail, head): free [head, capacity) then [0, tail)
+          at = align(head, alignment);
+          if (at + need > capacity) {
+            if (need > tail)
+              return false;
+            at = 0;
+          }
+        } else { // live wraps (or the ring is full): free [head, tail)
+          at = align(head, alignment);
+          if (at + need > tail)
+            return false;
+        }
+      }
+      if (!regions.empty() && regions.back().seq == seq && at >= regions.back().end)
+        regions.back().end = at + need;
+      else
+        regions.push_back({seq, at, at + need});
+      size_t u = used();
+      if (u > peak_used)
+        peak_used = u;
+      idle_time = 0;
+      offset = at;
+      return true;
+    }
   };
 
-  Allocation &allocate_or_reuse_block(uint64_t seq_id, uint64_t coherent_id, size_t block_size);
-
-  // Requests bigger than BlockSize (texture uploads of 64 MB and more) get a whole block from a pool of
-  // power-of-two size classes. A block returns to the pool once the GPU has finished the last chunk that used it
-  // and is reused by the next request of its class; the pool is capped and idle blocks expire. These blocks
-  // never enter the FIFO, so they can't be held back behind a regular block that is still waiting to expire.
   struct LargeBlock {
     size_t total_size;
     uint64_t last_used_seq_id;
@@ -57,34 +130,59 @@ private:
     Allocator::Block block;
   };
 
-  std::pair<typename Allocator::Block &, uint64_t>
-  allocate_large(uint64_t seq_id, uint64_t coherent_id, size_t size);
+  std::unique_ptr<Ring>
+  new_ring(size_t capacity) {
+    DXMT_RING_BUMP_LOG_NEW_BLOCK(capacity);
+    return std::unique_ptr<Ring>(new Ring{.capacity = capacity, .block = allocator_.allocate(capacity)});
+  }
 
-  // Moves in-flight large blocks whose last chunk is done (last use < done_before) to the pool.
+  // Moves `ring` to the retired list (released when its last chunk is done), or drops it if nothing uses it.
+  void
+  retire_ring(std::unique_ptr<Ring> ring) {
+    if (ring && !ring->empty())
+      retired_.push_back(std::move(ring));
+  }
+
+  void
+  release_retired(uint64_t done_before) {
+    for (auto it = retired_.begin(); it != retired_.end();) {
+      if ((*it)->last_seq() < done_before)
+        it = retired_.erase(it);
+      else
+        ++it;
+    }
+  }
+
+  std::pair<typename Allocator::Block &, uint64_t> allocate_regular(uint64_t seq_id, size_t size, size_t alignment);
+
+  std::pair<typename Allocator::Block &, uint64_t>
+  allocate_large(uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment);
+
+  // Moves in-flight pool blocks whose last chunk is before done_before back to the pool.
   void reclaim_large(uint64_t done_before);
 
   static constexpr size_t
-  large_size_class(size_t size) {
-    size_t cls = BlockSize;
+  pow2_at_least(size_t size, size_t from) {
+    size_t cls = from;
     while (cls < size)
       cls <<= 1;
     return cls;
   }
 
   static constexpr size_t large_pool_cap = kLargePoolCapBlocks * BlockSize;
+  static constexpr size_t arena_capacity = kLargeArenaBlocks * BlockSize;
+
+  std::unique_ptr<Ring> ring_;
+  size_t next_ring_capacity_ = BlockSize;
+  uint64_t shrink_window_ = 0; // free_blocks calls since the last shrink check
+  std::list<std::unique_ptr<Ring>> retired_;
+
+  std::unique_ptr<Ring> arena_;
 
   std::list<LargeBlock> large_in_flight_;
   std::list<LargeBlock> large_pool_; // oldest first
   size_t large_pool_bytes_ = 0;
 
-  std::pair<typename Allocator::Block &, uint64_t>
-  suballocate(Allocation &allocation, size_t size, size_t alignment) {
-    auto offset = align(allocation.allocated_size, alignment);
-    allocation.allocated_size = offset + size;
-    return {allocation.block, offset};
-  };
-
-  std::queue<Allocation> fifo;
   mutex mutex_;
   Allocator allocator_;
 };
@@ -95,91 +193,32 @@ RingBumpStateImpl<Allocator, BlockSize, mutex>::allocate(
     uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment
 ) {
   std::lock_guard<mutex> lock(mutex_);
+  // chunks before coherent_id are done (callers that never call free_blocks rely on this)
+  if (ring_)
+    ring_->retire(coherent_id);
+  release_retired(coherent_id);
   if (size > BlockSize)
-    return allocate_large(seq_id, coherent_id, size);
-  while (!fifo.empty()) {
-    auto &latest = fifo.back();
-    if ((align(latest.allocated_size, alignment) + size) > latest.total_size) {
-      break;
-    }
-    latest.last_used_seq_id = seq_id;
-    return suballocate(latest, size, alignment);
-  }
-  return suballocate(
-      allocate_or_reuse_block(
-          seq_id, coherent_id, std::max(size, BlockSize) // in case required size is larger than block size
-      ),
-      size, alignment
-  );
-};
+    return allocate_large(seq_id, coherent_id, size, alignment);
+  return allocate_regular(seq_id, size, alignment);
+}
 
 template <typename Allocator, size_t BlockSize, class mutex>
-void
-RingBumpStateImpl<Allocator, BlockSize, mutex>::free_blocks(uint64_t coherent_id) {
-  std::lock_guard<mutex> lock(mutex_);
-  if (coherent_id == ~0ull) {
-    large_in_flight_.clear();
-    large_pool_.clear();
-    large_pool_bytes_ = 0;
-  } else {
-    for (auto &pooled : large_pool_)
-      pooled.idle_time++;
-    reclaim_large(coherent_id + 1); // every chunk up to coherent_id is done
-    while (!large_pool_.empty() &&
-           (large_pool_.front().idle_time > kStagingBlockLifetime || large_pool_bytes_ > large_pool_cap)) {
-      large_pool_bytes_ -= large_pool_.front().total_size;
-      large_pool_.pop_front();
-    }
-  }
-  while (!fifo.empty()) {
-    auto &front = fifo.front();
-    if (front.last_used_seq_id > coherent_id)
-      break;
-    auto expired = (coherent_id - front.last_used_seq_id) > kStagingBlockLifetime ||
-                   front.inc_time_to_live > kStagingBlockLifetime || coherent_id == -1ull;
-    auto adhoc = front.total_size != BlockSize;
-    if (expired || adhoc) {
-      // can be deallocated
-      fifo.pop();
-      continue;
-    }
-    front.inc_time_to_live++;
-    break;
-  }
-};
-
-template <typename Allocator, size_t BlockSize, class mutex>
-RingBumpStateImpl<Allocator, BlockSize, mutex>::Allocation &
-RingBumpStateImpl<Allocator, BlockSize, mutex>::allocate_or_reuse_block(
-    uint64_t seq_id, uint64_t coherent_id, size_t block_size
-) {
-  while (!fifo.empty()) {
-    auto &front = fifo.front();
-    if (front.last_used_seq_id < coherent_id) {
-      if (front.total_size != BlockSize) {
-        fifo.pop();
-        continue;
-      } else if (front.total_size >= block_size) {
-        front.last_used_seq_id = seq_id;
-        front.allocated_size = 0;
-        front.inc_time_to_live = 0;
-        fifo.push(std::move(front));
-        fifo.pop();
-        return fifo.back();
-      }
-      DXMT_RING_BUMP_LOG_NEW_BLOCK(block_size);
-    }
-    break;
-  }
-  fifo.push({
-      .allocated_size = 0,
-      .total_size = block_size,
-      .last_used_seq_id = seq_id,
-      .inc_time_to_live = 0,
-      .block = allocator_.allocate(block_size),
-  });
-  return fifo.back();
-};
+std::pair<typename Allocator::Block &, uint64_t>
+RingBumpStateImpl<Allocator, BlockSize, mutex>::allocate_regular(uint64_t seq_id, size_t size, size_t alignment) {
+  size_t offset;
+  if (ring_ && ring_->place(seq_id, size, alignment, offset))
+    return {ring_->block, offset};
+  // full (or none yet): a bigger ring takes over; the current one is released once its chunks are done
+  size_t capacity = next_ring_capacity_;
+  if (ring_)
+    capacity = std::max(capacity, ring_->capacity * 2);
+  capacity = pow2_at_least(size, capacity); // a fresh ring places at offset 0, aligned for any alignment
+  retire_ring(std::move(ring_));
+  ring_ = new_ring(capacity);
+  next_ring_capacity_ = BlockSize;
+  ring_->place(seq_id, size, alignment, offset);
+  return {ring_->block, offset};
+}
 
 template <typename Allocator, size_t BlockSize, class mutex>
 void
@@ -197,10 +236,21 @@ RingBumpStateImpl<Allocator, BlockSize, mutex>::reclaim_large(uint64_t done_befo
 
 template <typename Allocator, size_t BlockSize, class mutex>
 std::pair<typename Allocator::Block &, uint64_t>
-RingBumpStateImpl<Allocator, BlockSize, mutex>::allocate_large(uint64_t seq_id, uint64_t coherent_id, size_t size) {
-  // same rule as the regular blocks: reuse only what a chunk before coherent_id used
+RingBumpStateImpl<Allocator, BlockSize, mutex>::allocate_large(
+    uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment
+) {
+  // the arena first
+  if (size + alignment <= arena_capacity) {
+    if (!arena_)
+      arena_ = new_ring(arena_capacity);
+    arena_->retire(coherent_id);
+    size_t offset;
+    if (arena_->place(seq_id, size, alignment, offset))
+      return {arena_->block, offset};
+  }
+  // arena full or too small: a whole block from the pool (same reuse rule as the ring)
   reclaim_large(coherent_id);
-  const size_t cls = large_size_class(size);
+  const size_t cls = pow2_at_least(size, BlockSize);
   for (auto it = large_pool_.rbegin(); it != large_pool_.rend(); ++it) { // most recently used first
     if (it->total_size != cls)
       continue;
@@ -219,6 +269,66 @@ RingBumpStateImpl<Allocator, BlockSize, mutex>::allocate_large(uint64_t seq_id, 
       .block = allocator_.allocate(cls),
   });
   return {large_in_flight_.back().block, 0};
+}
+
+template <typename Allocator, size_t BlockSize, class mutex>
+void
+RingBumpStateImpl<Allocator, BlockSize, mutex>::free_blocks(uint64_t coherent_id) {
+  std::lock_guard<mutex> lock(mutex_);
+  if (coherent_id == ~0ull) {
+    // Deferred contexts tear down after every command list: the next list starts with a ring that holds what
+    // this one needed, instead of growing again from BlockSize.
+    size_t needed = ring_ ? ring_->used() : 0;
+    for (auto &retired : retired_)
+      needed += retired->used();
+    next_ring_capacity_ = pow2_at_least(needed, BlockSize);
+    ring_.reset();
+    retired_.clear();
+    arena_.reset();
+    large_in_flight_.clear();
+    large_pool_.clear();
+    large_pool_bytes_ = 0;
+    return;
+  }
+  const uint64_t done_before = coherent_id + 1; // every chunk up to coherent_id is done
+  release_retired(done_before);
+
+  // ring: release when idle, hand over to a smaller one when oversized
+  if (ring_) {
+    ring_->retire(done_before);
+    if (++ring_->idle_time > kStagingBlockLifetime && ring_->empty()) {
+      ring_.reset();
+      next_ring_capacity_ = BlockSize;
+    }
+  }
+  if (ring_) {
+    if (++shrink_window_ >= kStagingBlockLifetime) {
+      shrink_window_ = 0;
+      if (ring_->capacity > BlockSize && ring_->peak_used * 4 <= ring_->capacity) {
+        next_ring_capacity_ = pow2_at_least(ring_->peak_used * 2, BlockSize);
+        retire_ring(std::move(ring_)); // the next allocation creates the smaller ring
+      } else {
+        ring_->peak_used = ring_->used();
+      }
+    }
+  }
+
+  // arena: release when idle
+  if (arena_) {
+    arena_->retire(done_before);
+    if (++arena_->idle_time > kStagingBlockLifetime && arena_->empty())
+      arena_.reset();
+  }
+
+  // pool
+  for (auto &pooled : large_pool_)
+    pooled.idle_time++;
+  reclaim_large(done_before);
+  while (!large_pool_.empty() &&
+         (large_pool_.front().idle_time > kStagingBlockLifetime || large_pool_bytes_ > large_pool_cap)) {
+    large_pool_bytes_ -= large_pool_.front().total_size;
+    large_pool_.pop_front();
+  }
 }
 
 } // namespace dxmt

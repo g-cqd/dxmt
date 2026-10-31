@@ -21,6 +21,7 @@
 #include "dxmt_buffer.hpp"
 #include "dxmt_context.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
+#include "dxmt_upload_budget.hpp"
 #include "dxmt_texture.hpp"
 
 namespace dxmt {
@@ -111,6 +112,9 @@ private:
   bool
   allocateBlit(T **p) {
     if (auto ptr = (wmtcmd_base *)allocateCpuHeap<T>()) {
+      // a no-op until the caller fills it in: a flush between two allocations must not encode a half-built
+      // command (the heap memory holds whatever the previous batch left there)
+      ptr->type = WMTBlitCommandNop;
       blit_cmd_tail->next.set(ptr);
       blit_cmd_tail = ptr;
       ptr->next.set(nullptr);
@@ -146,6 +150,14 @@ private:
   WMT::Reference<WMT::SharedEvent> upload_queue_event_;
   WMT::Reference<WMT::Buffer> zero_buffer_;
   size_t zero_buffer_size_ = 0;
+  size_t pending_upload_bytes_ = 0; // GPU heap bytes queued since the last flush
+
+  // Submits the queued uploads first when `size` more bytes would exceed the upload budget.
+  void
+  flushIfOverBudget(size_t size) {
+    if (upload_needs_flush(pending_upload_bytes_, size, kUploadFlushBytes))
+      flushInternal();
+  }
   dxmt::mutex mutex_;
 
   void *cpu_command_heap;
