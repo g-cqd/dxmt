@@ -23,6 +23,7 @@ struct FakeStats {
   size_t live_bytes = 0;
   size_t peak_bytes = 0;
   int next_id = 1;
+  std::set<int> destroyed;
 };
 
 class FakeAllocator {
@@ -40,6 +41,7 @@ public:
     Block(Block &&m) : stats(m.stats), size(m.size), id(m.id) { m.stats = nullptr; }
     ~Block() {
       if (stats) {
+        stats->destroyed.insert(id);
         stats->live--;
         stats->live_bytes -= size;
       }
@@ -351,8 +353,11 @@ static void test_random_no_overlap_with_in_flight_memory() {
     for (int k = 0; k < n; k++) {
       size_t size = (next() % 10 == 0) ? kBlock + next() % (6 * kBlock) : 1 + next() % (kBlock / 2);
       size_t alignment = size_t(1) << (next() % 9);
+      uint64_t for_seq = seq;
+      if (next() % 7 == 0 && seq > coherent + 1)
+        for_seq = coherent + 1 + next() % (seq - coherent);  // an older chunk still in flight (Retain)
       std::erase_if(live, [&](const R &r) { return r.seq < coherent; });
-      auto [block, offset] = f.state.allocate(seq, coherent, size, alignment);
+      auto [block, offset] = f.state.allocate(for_seq, coherent, size, alignment);
       CHECK(offset % alignment == 0, "seq %llu: offset not aligned", (unsigned long long)seq);
       CHECK(offset + size <= block.size, "seq %llu: allocation exceeds its block", (unsigned long long)seq);
       for (auto &r : live)
@@ -362,10 +367,16 @@ static void test_random_no_overlap_with_in_flight_memory() {
                 (unsigned long long)r.b, (unsigned long long)r.e);
           return;
         }
-      live.push_back({block.id, offset, offset + size, seq});
+      live.push_back({block.id, offset, offset + size, for_seq});
     }
     f.state.free_blocks(coherent);
     std::erase_if(live, [&](const R &r) { return r.seq <= coherent; });
+    for (auto &r : live)
+      if (f.stats.destroyed.count(r.id)) {
+        CHECK(false, "seq %llu: block %d destroyed while chunk %llu still uses it", (unsigned long long)seq, r.id,
+              (unsigned long long)r.seq);
+        return;
+      }
   }
   f.state.free_blocks(~0ull);
   CHECK(f.stats.live == 0, "%d blocks alive after teardown", f.stats.live);
@@ -411,6 +422,24 @@ static void test_deferred_lists_reuse_their_size() {
         f.stats.peak_bytes);
 }
 
+// Allocations do not always arrive in chunk order: CommandQueue::Retain allocates reference-tracker storage for
+// the chunk it is given, which can be older than one that allocated before it. A ring must stay alive until the
+// newest chunk in it is done, not the chunk of its last allocation (2026-10-31 hang: two chunks shared tracker
+// storage and AllocationRefTracking::clear() looped forever).
+static void test_ring_released_after_newest_chunk_not_last() {
+  Fixture f;
+  auto [b12, o12] = f.state.allocate(12, 0, 600, 16);
+  int ring1 = b12.id;
+  f.state.allocate(10, 0, 300, 16);           // an older chunk allocates last
+  f.state.allocate(13, 0, 900, 16);           // does not fit: a bigger ring takes over, ring1 is retired
+  f.state.free_blocks(11);                    // chunks up to 11 done, chunk 12 is not
+  // ring1 still holds chunk 12's data: it must not be released
+  CHECK(f.stats.live == 2, "ring with chunk 12's data released while chunk 12 is in flight (%d alive)",
+        f.stats.live);
+  (void)ring1;
+  (void)o12;
+}
+
 int main() {
   struct { const char *name; void (*fn)(); } tests[] = {
       {"no_overlap_while_in_flight", test_no_overlap_while_in_flight},
@@ -434,6 +463,7 @@ int main() {
       {"random_no_overlap_with_in_flight_memory", test_random_no_overlap_with_in_flight_memory},
       {"ring_shrinks_while_in_use", test_ring_shrinks_while_in_use},
       {"deferred_lists_reuse_their_size", test_deferred_lists_reuse_their_size},
+      {"ring_released_after_newest_chunk_not_last", test_ring_released_after_newest_chunk_not_last},
   };
   int failed_tests = 0;
   for (auto &t : tests) {

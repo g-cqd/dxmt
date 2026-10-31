@@ -69,9 +69,12 @@ private:
     empty() const {
       return regions.empty();
     }
+    // Allocations don't always arrive in chunk order (CommandQueue::Retain allocates for the chunk it is given),
+    // so the ring is in use until the newest chunk that ever allocated in it is done.
+    uint64_t newest_seq = 0;
     uint64_t
     last_seq() const {
-      return regions.empty() ? 0 : regions.back().seq;
+      return regions.empty() ? 0 : newest_seq;
     }
     size_t
     used() const {
@@ -110,6 +113,8 @@ private:
             return false;
         }
       }
+      if (seq > newest_seq)
+        newest_seq = seq;
       if (!regions.empty() && regions.back().seq == seq && at >= regions.back().end)
         regions.back().end = at + need;
       else
