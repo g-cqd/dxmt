@@ -7,47 +7,16 @@
 #include <mutex>
 #include <queue>
 
+#define DXMT_RING_BUMP_LOG_NEW_BLOCK(size) WARN("forced to allocate new block of size ", size)
+#include "dxmt_ring_bump_state.hpp"
+
 namespace dxmt {
 
 constexpr size_t kStagingBlockSize = 0x2000000; // 32MB
 constexpr size_t kStagingBlockSizeForDeferredContext = 0x200000; // 2MB
-constexpr size_t kStagingBlockLifetime = 300;
 
-template <typename Allocator, size_t BlockSize = kStagingBlockSize, class mutex = dxmt::mutex> class RingBumpState {
-
-public:
-
-  static constexpr size_t block_size = BlockSize;
-
-  RingBumpState(Allocator &&allocator) : allocator_(std::move(allocator)) {}
-
-  std::pair<typename Allocator::Block &, uint64_t>
-  allocate(uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment);
-
-  void free_blocks(uint64_t coherent_id);
-
-private:
-  struct Allocation {
-    size_t allocated_size;
-    size_t total_size;
-    uint64_t last_used_seq_id;
-    uint64_t inc_time_to_live;
-    Allocator::Block block;
-  };
-
-  Allocation &allocate_or_reuse_block(uint64_t seq_id, uint64_t coherent_id, size_t block_size);
-
-  std::pair<typename Allocator::Block &, uint64_t>
-  suballocate(Allocation &allocation, size_t size, size_t alignment) {
-    auto offset = align(allocation.allocated_size, alignment);
-    allocation.allocated_size = offset + size;
-    return {allocation.block, offset};
-  };
-
-  std::queue<Allocation> fifo;
-  mutex mutex_;
-  Allocator allocator_;
-};
+template <typename Allocator, size_t BlockSize = kStagingBlockSize, class mutex = dxmt::mutex>
+using RingBumpState = RingBumpStateImpl<Allocator, BlockSize, mutex>;
 
 class GpuPrivateBufferBlockAllocator {
 public:
@@ -160,82 +129,6 @@ public:
     block.ptr = malloc(block_size);
     return block;
   };
-};
-
-template <typename Allocator, size_t BlockSize, class mutex>
-std::pair<typename Allocator::Block &, uint64_t>
-RingBumpState<Allocator, BlockSize, mutex>::allocate(
-    uint64_t seq_id, uint64_t coherent_id, size_t size, size_t alignment
-) {
-  std::lock_guard<mutex> lock(mutex_);
-  while (!fifo.empty()) {
-    auto &latest = fifo.back();
-    if ((align(latest.allocated_size, alignment) + size) > latest.total_size) {
-      break;
-    }
-    latest.last_used_seq_id = seq_id;
-    return suballocate(latest, size, alignment);
-  }
-  return suballocate(
-      allocate_or_reuse_block(
-          seq_id, coherent_id, std::max(size, BlockSize) // in case required size is larger than block size
-      ),
-      size, alignment
-  );
-};
-
-template <typename Allocator, size_t BlockSize, class mutex>
-void
-RingBumpState<Allocator, BlockSize, mutex>::free_blocks(uint64_t coherent_id) {
-  std::lock_guard<mutex> lock(mutex_);
-  while (!fifo.empty()) {
-    auto &front = fifo.front();
-    if (front.last_used_seq_id > coherent_id)
-      break;
-    auto expired = (coherent_id - front.last_used_seq_id) > kStagingBlockLifetime ||
-                   front.inc_time_to_live > kStagingBlockLifetime || coherent_id == -1ull;
-    auto adhoc = front.total_size != BlockSize;
-    if (expired || adhoc) {
-      // can be deallocated
-      fifo.pop();
-      continue;
-    }
-    front.inc_time_to_live++;
-    break;
-  }
-};
-
-template <typename Allocator, size_t BlockSize, class mutex>
-RingBumpState<Allocator, BlockSize, mutex>::Allocation &
-RingBumpState<Allocator, BlockSize, mutex>::allocate_or_reuse_block(
-    uint64_t seq_id, uint64_t coherent_id, size_t block_size
-) {
-  while (!fifo.empty()) {
-    auto &front = fifo.front();
-    if (front.last_used_seq_id < coherent_id) {
-      if (front.total_size != BlockSize) {
-        fifo.pop();
-        continue;
-      } else if (front.total_size >= block_size) {
-        front.last_used_seq_id = seq_id;
-        front.allocated_size = 0;
-        front.inc_time_to_live = 0;
-        fifo.push(std::move(front));
-        fifo.pop();
-        return fifo.back();
-      }
-      WARN("forced to allocate new block of size ", block_size);
-    }
-    break;
-  }
-  fifo.push({
-      .allocated_size = 0,
-      .total_size = block_size,
-      .last_used_seq_id = seq_id,
-      .inc_time_to_live = 0,
-      .block = allocator_.allocate(block_size),
-  });
-  return fifo.back();
 };
 
 } // namespace dxmt
