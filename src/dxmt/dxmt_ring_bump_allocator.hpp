@@ -7,7 +7,7 @@
 #include <mutex>
 #include <queue>
 
-#define DXMT_RING_BUMP_LOG_NEW_BLOCK(size) WARN("forced to allocate new block of size ", size)
+#define DXMT_RING_BUMP_LOG_NEW_BLOCK(size) Logger::info(str::format("staging allocator: new buffer of size ", size))
 #include "dxmt_ring_bump_state.hpp"
 
 namespace dxmt {

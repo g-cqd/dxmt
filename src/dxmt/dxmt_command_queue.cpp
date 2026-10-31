@@ -67,7 +67,8 @@ CommandQueue::CommandQueue(WMT::Device device) :
   if (!env.empty()) {
     try {
       capture_state.scheduleNextFrameCapture(std::stoull(env));
-    } catch (const std::invalid_argument &) {
+    } catch (const std::logic_error &) { // invalid_argument, out_of_range
+      WARN("DXMT_CAPTURE_FRAME: not a frame number: ", env);
     }
   }
 }

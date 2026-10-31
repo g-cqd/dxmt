@@ -917,7 +917,7 @@ bool CheckGSSignatureIsPassThrough(
           if (out.SemanticIndex != in.SemanticIndex) {
             return false;
           }
-          if (strcasecmp(out.SemanticName, in.SemanticName)) {
+          if (strcasecmp(out.SemanticName, in.SemanticName) != 0) {
             return false;
           }
         }

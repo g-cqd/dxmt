@@ -81,7 +81,8 @@ uint64_t
 ResourceInitializer::initWithZero(BufferAllocation *buffer, uint64_t offset, uint64_t length) {
   std::lock_guard<dxmt::mutex> lock(mutex_);
 
-  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
+  int attempt;
+  for (attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(buffer);
     ALLOC_BLIT(wmtcmd_blit_fillbuffer, fill);
     fill->type = WMTBlitCommandFillBuffer;
@@ -92,6 +93,8 @@ ResourceInitializer::initWithZero(BufferAllocation *buffer, uint64_t offset, uin
 
     break;
   }
+  if (unlikely(attempt == 2))
+    ERR("ResourceInitializer::", __func__, ": out of staging memory after a flush, initialization dropped");
 
   return current_seq_id_;
 }
@@ -104,7 +107,8 @@ ResourceInitializer::initDepthStencilWithZero(
   auto height_sub = std::max(1u, texture->height() >> level);
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
+  int attempt;
+  for (attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_CLEAR(info);
 
@@ -130,6 +134,8 @@ ResourceInitializer::initDepthStencilWithZero(
 
     break;
   }
+  if (unlikely(attempt == 2))
+    ERR("ResourceInitializer::", __func__, ": out of staging memory after a flush, initialization dropped");
 
   return current_seq_id_;
 }
@@ -142,7 +148,8 @@ ResourceInitializer::initRenderTargetWithZero(
   auto height_sub = std::max(1u, texture->height() >> level);
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
-  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
+  int attempt;
+  for (attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_CLEAR(info);
 
@@ -158,6 +165,8 @@ ResourceInitializer::initRenderTargetWithZero(
 
     break;
   }
+  if (unlikely(attempt == 2))
+    ERR("ResourceInitializer::", __func__, ": out of staging memory after a flush, initialization dropped");
 
   return current_seq_id_;
 }
@@ -208,7 +217,8 @@ ResourceInitializer::initWithZero(
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
 
-  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
+  int attempt;
+  for (attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     ALLOC_ZERO(zero, total_bytes_needed);
     RETAIN(allocation);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture, copy);
@@ -226,6 +236,8 @@ ResourceInitializer::initWithZero(
 
     break;
   }
+  if (unlikely(attempt == 2))
+    ERR("ResourceInitializer::", __func__, ": out of staging memory after a flush, initialization dropped");
 
   return current_seq_id_;
 }
@@ -279,7 +291,8 @@ ResourceInitializer::initWithData(
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
   flushIfOverBudget(total_bytes_needed);
-  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
+  int attempt;
+  for (attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture, copy);
     ALLOC_GPU(temp, total_bytes_needed);
@@ -313,6 +326,8 @@ ResourceInitializer::initWithData(
 
     break;
   }
+  if (unlikely(attempt == 2))
+    ERR("ResourceInitializer::", __func__, ": out of staging memory after a flush, initialization dropped");
 
   return current_seq_id_;
 }
@@ -333,7 +348,8 @@ ResourceInitializer::initDepthStencilWithData(
 
   std::lock_guard<dxmt::mutex> lock(mutex_);
   flushIfOverBudget(depth_bytes_per_image + stencil_bytes_per_image);
-  for (int attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
+  int attempt;
+  for (attempt = 0; attempt < 2; attempt++) { // `continue` (after a flush) retries once
     RETAIN(allocation);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture_withblitoption, depth_copy);
     ALLOC_BLIT(wmtcmd_blit_copy_from_buffer_to_texture_withblitoption, stencil_copy);
@@ -385,6 +401,8 @@ ResourceInitializer::initDepthStencilWithData(
 
     break;
   }
+  if (unlikely(attempt == 2))
+    ERR("ResourceInitializer::", __func__, ": out of staging memory after a flush, initialization dropped");
 
   return current_seq_id_;
 }
